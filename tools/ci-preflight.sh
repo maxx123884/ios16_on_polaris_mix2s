@@ -40,6 +40,8 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)
+
 BAD=0
 ok() { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; BAD=1; }
@@ -123,15 +125,62 @@ else
 fi
 
 # ------------------------------------------------ conf/files chain (CI order)
+# Default the inputs so `sh tools/ci-preflight.sh` alone is meaningful: fetch
+# the upstream file the workflow builds against and rebuild the 0093 output of
+# polaris_gpu.c from the patch that creates it.
+XNU_TAG=xnu-8796.141.3
+if [ -z "$CONF_FILES" ]; then
+	mktmp
+	if CONF_FILES=$TMP/conf-files &&
+		curl -sS -o "$CONF_FILES" \
+			"https://api.github.com/repos/apple-oss-distributions/xnu/contents/bsd/conf/files?ref=$XNU_TAG" 2>/dev/null &&
+		"$PY" - "$CONF_FILES" <<'PY' 2>/dev/null
+import base64, json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+open(p, 'wb').write(base64.b64decode(d['content']))
+PY
+	then
+		note "fetched upstream bsd/conf/files for $XNU_TAG"
+	else
+		note "could not fetch upstream bsd/conf/files; skipping that check"
+		CONF_FILES=""
+	fi
+fi
+
+if [ -z "$PG_BASE" ]; then
+	mktmp
+	if PG_BASE=$TMP/polaris_gpu.c &&
+		"$PY" - "$PATCHDIR"/0093-*.patch "$PG_BASE" <<'PY' 2>/dev/null
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src, encoding='utf-8', errors='replace').read().split('\n')
+start = next(i for i, l in enumerate(lines) if l.startswith('diff --git a/bsd/dev/polaris_gpu.c'))
+body = []
+for l in lines[start + 1:]:
+    if l.startswith('diff --git '):
+        break
+    if l.startswith('+') and not l.startswith('+++'):
+        body.append(l[1:])
+open(dst, 'w', encoding='utf-8', newline='\n').write('\n'.join(body) + '\n')
+PY
+	then
+		note "rebuilt the 0093 output of polaris_gpu.c from its patch"
+	else
+		note "could not rebuild polaris_gpu.c; skipping 0094 context check"
+		PG_BASE=""
+	fi
+fi
+
 if [ -n "$CONF_FILES" ]; then
 	if [ ! -f "$CONF_FILES" ]; then
 		bad "--conf-files $CONF_FILES does not exist"
 	else
 		mktmp
-		mkdir -p "$TMP/bsd/conf"
-		cp "$CONF_FILES" "$TMP/bsd/conf/files"
+		mkdir -p "$TMP/chain/bsd/conf"
+		cp "$CONF_FILES" "$TMP/chain/bsd/conf/files"
 		(
-			cd "$TMP" || exit 1
+			cd "$TMP/chain" || exit 1
 			git init -q . && git config core.autocrlf false && git add -A &&
 				git -c user.name=preflight -c user.email=preflight@localhost \
 					commit -qm base
@@ -141,9 +190,9 @@ if [ -n "$CONF_FILES" ]; then
 		skipped=""
 		for p in $(grep -lE '^(diff --git a/bsd/conf/files|--- a/bsd/conf/files)' \
 			"$PATCHDIR"/*.patch | LC_ALL=C sort); do
-			if git -C "$TMP" apply --check --include='bsd/conf/files' \
+			if git -C "$TMP/chain" apply --check --include='bsd/conf/files' \
 				--whitespace=nowarn "$p" 2>/dev/null; then
-				git -C "$TMP" apply --include='bsd/conf/files' \
+				git -C "$TMP/chain" apply --include='bsd/conf/files' \
 					--whitespace=nowarn "$p" 2>/dev/null ||
 					bad "apply failed after --check passed: $(basename "$p")"
 				applied=$((applied + 1))
@@ -156,8 +205,8 @@ if [ -n "$CONF_FILES" ]; then
 			for s in $skipped; do note "$s"; done
 		else
 			ok "$applied patches apply to the real bsd/conf/files, in order"
-			if grep -q '^bsd/dev/polaris_gpu_validate.c' "$TMP/bsd/conf/files" &&
-				grep -q '^bsd/dev/polaris_gpu_hash.c' "$TMP/bsd/conf/files"; then
+			if grep -q '^bsd/dev/polaris_gpu_validate.c' "$TMP/chain/bsd/conf/files" &&
+				grep -q '^bsd/dev/polaris_gpu_hash.c' "$TMP/chain/bsd/conf/files"; then
 				ok "both new GPU sources are listed in conf/files"
 			else
 				bad "a new GPU source is missing from the resulting conf/files"
