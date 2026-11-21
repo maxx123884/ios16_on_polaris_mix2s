@@ -55,7 +55,7 @@ fi
 
 out=${TMPDIR:-/tmp}/pgv.$$.exe
 outh=${TMPDIR:-/tmp}/pgh.$$.exe
-trap 'rm -f "$out" "$outh"' EXIT INT TERM
+trap 'rm -f "$out" "$outh" 2>/dev/null || true' EXIT INT TERM
 "$@" -std=c99 -Wall -Wextra -Werror -o "$out" \
 	"$TREE/tools/test_polaris_gpu_validate.c" "$TREE/bsd/dev/polaris_gpu_validate.c"
 "$out"

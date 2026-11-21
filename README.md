@@ -42,7 +42,12 @@
 ```sh
 # 离线测试；不需要专有固件，不证明真机运行
 python -m unittest tools/test_polaris_cpu_topology.py tools/test_polaris_gpu_preflight.py tools/test_polaris_gmu_firmware.py tools/test_polaris_arc_db.py tools/test_polaris_bcm_db.py tools/test_polaris_bw_levels.py tools/test_polaris_gpu_stages.py tools/test_polaris_gpu_expect_table.py tools/test_polaris_rscc_pdc.py tools/test_polaris_zap_check.py tools/test_polaris_firmware_set.py tools/test_polaris_payload_blobs.py -q
+# 推 CI 之前：复现工作流的补丁应用方式，把"跳过"当失败
+sh tools/ci-preflight.sh --conf-files <上游 bsd/conf/files> --pg-base <0093 产出的 polaris_gpu.c>
 ```
+
+工作流用 `git apply --check` 试补丁，失败只打 warning 就跳过，所以**绿色的 run 不等于补丁被应用**。
+判读方法与推送步骤见 [ci-push.zh-CN.md](<research/polaris/ci-push.zh-CN.md>)。
 
 仓库不上传 Apple 镜像、Qualcomm 固件、设备转储、序列号或分区备份。对 `userdata` 写入会清除现有数据；新的临时启动与任何分区写入均须事先分别确认，保留 bootloader、recovery、modem、persist 和备份。
 
