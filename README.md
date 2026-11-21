@@ -17,7 +17,7 @@
 | 启动和触摸 | 0090 RELEASE 临时启动到 iOS 锁屏；用户确认 **单指、双指**触摸。S3330 使用 GPIO33/34 实验性软件 I²C、GPIO99 复位释放、连续 F12 帧。 | 未取得完整 0090 ring；十指、正式 SE14 硬件 I²C、长期稳定性未验证。用户表示自行刷入过工作镜像，代理未读回 boot 分区确认。 |
 | CPU | Polaris ADT 有八个 MPIDR `0x000`–`0x700` 节点，XNU 上限为 8。**已测试镜像指定 `cpus=4`**；CPU1–3 的 PSCI CPU_ON／SGI 成功，最终 `4/4`。 | **没有 CPU4–7 四个 A75 在 MIX 2S 上运行的证据**。八核设备树和内核上限不等于八核已启动。 |
 | 存储、界面和显示 | 复用 XNU UFS／HFS+ `userdata` 根和 iPhone X 用户态链路；CPU 软件合成／缩放到 ABL 遗留 framebuffer。 | 完整应用稳定性、独立面板初始化和 GPU 屏幕呈现未验证。 |
-| GPU | Recovery Linux 只读报告 A630v2、257–710 MHz；本机六个固件组件通过离线预检。可选只读**固件元数据** XNU 0091/0092 在 [CI 39739222780](https://github.com/luuu20309/ios16_on_polaris_mix2s/actions/runs/39739222780) 编译／链接通过；Python 主机测试 105 项、C 校验器 51 断言通过。0094–0096 定义并校验了固件交接（尺寸 + SHA-256），固件已能打进 payload（[布局说明](<research/polaris/payload-firmware-layout.zh-CN.md>)），0096 的外部 API 依赖已逐条核对（[编译假设](<research/polaris/xnu-build-assumptions.zh-CN.md>)），GX 的寄存器窗口与地址推导已从厂商设备树落地（[M0a 只读探测](<research/polaris/m0a-gx-readonly-probe.zh-CN.md>)）。 | **没有 XNU GPU 上电、GMU/HFI、PAS13、SMMU、CP fence、GPU 渲染、Mesa/EAGL 或 Metal。** 0093 是默认关闭的初始化门槛，尚未 XNU 编译或真机执行；0096 也未经 CI 编译，带固件的镜像未启动过。 |
+| GPU | Recovery Linux 只读报告 A630v2、257–710 MHz；本机六个固件组件通过离线预检。可选只读**固件元数据** XNU 0091/0092 在 [CI 39739222780](https://github.com/luuu20309/ios16_on_polaris_mix2s/actions/runs/39739222780) 编译／链接通过；Python 主机测试 110 项、C 校验器 51 断言通过。0094–0096 定义并校验了固件交接（尺寸 + SHA-256），固件已能打进 payload（[布局说明](<research/polaris/payload-firmware-layout.zh-CN.md>)），0096 的外部 API 依赖已逐条核对（[编译假设](<research/polaris/xnu-build-assumptions.zh-CN.md>)），GX 的寄存器窗口与地址推导已从厂商设备树落地（[M0a 只读探测](<research/polaris/m0a-gx-readonly-probe.zh-CN.md>)）。 | **没有 XNU GPU 上电、GMU/HFI、PAS13、SMMU、CP fence、GPU 渲染、Mesa/EAGL 或 Metal。** 0093 是默认关闭的初始化门槛，尚未 XNU 编译或真机执行；0096 也未经 CI 编译，带固件的镜像未启动过。 |
 
 ### 目前的错误、阻塞及处理
 
@@ -40,7 +40,7 @@
 更多细节：[Polaris 技术报告（中英）](<research/polaris/README.md>)、[Polaris 构建／CPU 指南](<docs/POLARIS-MIX2S.md>)、[逐次错误和真机日志交接](<NOTES.md>)、[XNU 补丁](<xnu/patches/>)、[CPU 测试](<tools/test_polaris_cpu_topology.py>)、[原 sweet 历史](<docs/SWEET-HISTORY.md>)。**下载：**[0090 内核 Release](https://github.com/luuu20309/ios16_on_polaris_mix2s/releases/tag/polaris-kernel-0090)（仅内核，不能直接刷 boot）及[酷安平台刷入／临时启动教程](<docs/COOLAPK-POLARIS-INSTALL.md>)。上游基础：[dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)；硬件资料：[MiCode Polaris 内核](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/polaris-o-oss)。
 
 ```sh
-# 离线测试（105 项）；不需要专有固件，不证明真机运行
+# 离线测试（110 项）；不需要专有固件，不证明真机运行
 python -m unittest tools/test_polaris_cpu_topology.py tools/test_polaris_gpu_preflight.py tools/test_polaris_gmu_firmware.py tools/test_polaris_arc_db.py tools/test_polaris_bcm_db.py tools/test_polaris_bw_levels.py tools/test_polaris_gpu_stages.py tools/test_polaris_gpu_expect_table.py tools/test_polaris_rscc_pdc.py tools/test_polaris_zap_check.py tools/test_polaris_firmware_set.py tools/test_polaris_payload_blobs.py tools/test_polaris_dt_regs.py tools/test_polaris_gmu_csr.py -q
 # 设备树里的 GPU 窗口，与 GMU CSR 的索引→地址推导（都只读文件）
 python tools/polaris_dt_regs.py <MIUI>/images/boot.img
@@ -65,7 +65,7 @@ This repository highlights the **Polaris/SDM845** board port of the XNU/iPhone X
 | Boot/touch | Temporary 0090 RELEASE boot reached the lock screen; the user confirmed one- and two-finger S3330 input. | Full ten-contact reliability, hardware SE14 I²C, long-term stability, permanent-boot readback. |
 | CPUs | Eight ADT nodes and an XNU limit of eight. The observed `cpus=4` image started four A55s; PSCI and SGI passed for CPUs1–3. | No log proves CPU4–7 (the A75s) boot on this Polaris phone. Four selected CPUs follow the boot argument, **not** an observed A75 failure. |
 | Display | Software composition/scaling into the bootloader-inherited framebuffer. | GPU composition or independent panel initialization. |
-| GPU | Recovery Linux identified A630v2. Device firmware was screened **locally** and excluded from Git. Read-only XNU firmware-metadata diagnostics compiled/linked in [CI 39739222780](https://github.com/luuu20309/ios16_on_polaris_mix2s/actions/runs/39739222780); 105 Python host tests and 51 C assertions pass. 0094–0096 define and check the firmware handoff (size + SHA-256), and the blobs can now be packed into the payload ([layout notes](<research/polaris/payload-firmware-layout.zh-CN.md>)). | **No XNU GPU power, GMU/HFI, secure PAS13, SMMU mappings, CP fence, rendering, Mesa/EAGL, or Metal.** 0093 is an uncompiled, default-off gate that refuses at its first missing backend; 0096 has not been built by CI and the firmware-bearing image has never been started. |
+| GPU | Recovery Linux identified A630v2. Device firmware was screened **locally** and excluded from Git. Read-only XNU firmware-metadata diagnostics compiled/linked in [CI 39739222780](https://github.com/luuu20309/ios16_on_polaris_mix2s/actions/runs/39739222780); 110 Python host tests and 51 C assertions pass. 0094–0096 define and check the firmware handoff (size + SHA-256), and the blobs can now be packed into the payload ([layout notes](<research/polaris/payload-firmware-layout.zh-CN.md>)). | **No XNU GPU power, GMU/HFI, secure PAS13, SMMU mappings, CP fence, rendering, Mesa/EAGL, or Metal.** 0093 is an uncompiled, default-off gate that refuses at its first missing backend; 0096 has not been built by CI and the firmware-bearing image has never been started. |
 
 ### Known failures and why progress stopped
 

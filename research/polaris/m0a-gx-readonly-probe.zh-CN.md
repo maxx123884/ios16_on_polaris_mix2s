@@ -4,7 +4,7 @@
 为后续"要不要写、写什么"提供事实。本文给出**地址推导**、**探测清单**、
 **判读矩阵**和**拒绝条件**，以及仍然未证的部分。
 
-所有数字都有出处；没有出处的项在 §6 明确标为未证，不得当作可用能力。
+所有数字都有出处；没有出处的项在 §7 明确标为未证，不得当作可用能力。
 
 ## 1. 新增证据：厂商设备树
 
@@ -16,7 +16,7 @@ version 17。解析结果（`tools/polaris_dt_regs.py`）：
 |---|---|---|---|
 | `soc/qcom,gpucc@5090000` | — | `0x05090000 + 0x009000` | `compatible = qcom,gpucc-sdm845-v2` |
 | `soc/qcom,gmu` | `kgsl_gmu_reg` | `0x0506a000 + 0x030000` | GMU CSR 窗口 |
-| `soc/qcom,gmu` | `kgsl_gmu_pdc_reg` | `0x0b200000 + 0x300000` | GPU 自己的 PDC 块（未使用） |
+| `soc/qcom,gmu` | `kgsl_gmu_pdc_reg` | `0x0b200000 + 0x300000` | GPU 的 PDC 块；`PDC_GPU_*` 写这里（见 §2） |
 | `reserved-memory/gpu_region@0x8c415000` | — | `0x8c415000 + 0x002000` | zap 的 8 KiB 预留（与 0090 事实一致） |
 
 两点值得记下：
@@ -50,23 +50,33 @@ byte = (index - 0x1A800) * 4，窗口 [0x0506a000, 0x0509a000)
 
 ### 探测清单（全部只读）
 
-| 寄存器 | a6xx_reg.h 索引 | GMU 内偏移 | 物理地址 |
-|---|---|---|---|
-| `GPU_RSCC_RSC_STATUS0_DRV0` | `0x23404` | `+0x23010` | `0x0508d010` |
-| `RSCC_PDC_SLAVE_ID_DRV0` | `0x2340b` | `+0x2302c` | `0x0508d02c` |
-| `RSCC_PDC_SEQ_START_ADDR` | `0x23408` | `+0x23020` | `0x0508d020` |
-| `RSCC_PDC_MATCH_VALUE_LO` | `0x23409` | `+0x23024` | `0x0508d024` |
-| `RSCC_PDC_MATCH_VALUE_HI` | `0x2340a` | `+0x23028` | `0x0508d028` |
-| `PDC_GPU_ENABLE_PDC` | `0x21140` | `+0x1a500` | `0x05084500` |
-| `RSCC_SEQ_BUSY_DRV0` | `0x23501` | `+0x23404` | `0x0508d404` |
-| `GMU_RSCC_CONTROL_REQ` | `0x23b07` | `+0x24c1c` | `0x0508ec1c` |
-| `GMU_RSCC_CONTROL_ACK` | `0x23b08` | `+0x24c20` | `0x0508ec20` |
+| 寄存器 | 索引 | 所在窗口 | 窗口内偏移 | 物理地址 |
+|---|---|---|---|---|
+| `GPU_RSCC_RSC_STATUS0_DRV0` | `0x23404` | GMU | `+0x23010` | `0x0508d010` |
+| `RSCC_PDC_SLAVE_ID_DRV0` | `0x2340b` | GMU | `+0x2302c` | `0x0508d02c` |
+| `RSCC_PDC_SEQ_START_ADDR` | `0x23408` | GMU | `+0x23020` | `0x0508d020` |
+| `RSCC_PDC_MATCH_VALUE_LO` | `0x23409` | GMU | `+0x23024` | `0x0508d024` |
+| `RSCC_PDC_MATCH_VALUE_HI` | `0x2340a` | GMU | `+0x23028` | `0x0508d028` |
+| `PDC_GPU_ENABLE_PDC` | `0x21140` | **PDC** | `+0x84500` | **`0x0b284500`** |
+| `RSCC_SEQ_BUSY_DRV0` | `0x23501` | GMU | `+0x23404` | `0x0508d404` |
+| `GMU_RSCC_CONTROL_REQ` | `0x23b07` | GMU | `+0x24c1c` | `0x0508ec1c` |
+| `GMU_RSCC_CONTROL_ACK` | `0x23b08` | GMU | `+0x24c20` | `0x0508ec20` |
 
-**对既有文档的一处纠正**：这些"PDC 寄存器"不在 `0x05090000` 的 GPUCC 里，
-也不在 `0x0b200000` 的 GPU PDC 块里，而在 **GMU 窗口**里。
-`0x4520 / 0x4510 / 0x4514` 是**写进** `SEQ_START_ADDR` 与 `MATCH_VALUE_*`
-的值（PDC 程序地址），不是寄存器偏移——两者此前在叙述里容易混。
-`0x0b200000` 那个 3 MB 窗口本机 DT 里确实存在，但本驱动暂不使用，用途未证。
+**两个窗口，两条规则，不能混用**（本文上一版把 `PDC_GPU_ENABLE_PDC` 算进
+GMU 窗口，写成了 `0x05084500`，这是**错的**）：
+
+- GMU 窗口按"索引减 `0x1A800` 再乘 4"重定基（`adreno.c:2914`）。
+- PDC 窗口**完全不重定基**。厂商是独立 ioremap 这个资源、再用
+  `a6xx.c:1173 _regwrite(regbase, offsetwords, v) → regbase + (offsetwords << 2)`
+  直接写：`kgsl_gmu.c:921 gmu->pdc_reg_virt = devm_ioremap(res->start, ...)`，
+  资源名就是 DT 里的 `kgsl_gmu_pdc_reg`。所以
+  `0x0b200000 + 0x21140 * 4 = 0x0b284500`。
+
+错用规则的后果不是缺页：`0x05084500` 落在 GMU 窗口里，是**另一个寄存器**，
+读得到、写得进，但和 PDC 无关。这正是把规则做成推导＋双窗口边界检查的原因。
+
+**另一处纠正**：`0x4520 / 0x4510 / 0x4514` 是**写进** `SEQ_START_ADDR` 与
+`MATCH_VALUE_*` 的值（PDC 程序地址），不是寄存器偏移——两者此前在叙述里容易混。
 
 ## 3. 判读矩阵
 
@@ -81,7 +91,7 @@ byte = (index - 0x1A800) * 4，窗口 [0x0506a000, 0x0509a000)
 | `PDC_ENABLE` bit0 = 1 | PDC 已使能 | 记录 |
 | 任一寄存器连续两次读到 `0xFFFFFFFF` | 总线/时钟没开 | 停止并报告，不要重试 |
 
-矩阵里没有"于是我们写什么"。写是 M0b 的事，且必须先满足 §6 的条件。
+矩阵里没有"于是我们写什么"。写是 M0b 的事，且必须先满足 §7 的条件。
 
 ## 4. 拒绝条件（fail closed）
 
@@ -93,26 +103,68 @@ byte = (index - 0x1A800) * 4，窗口 [0x0506a000, 0x0509a000)
 4. 读到全 `0xFFFFFFFF`；
 5. 未通过 `polarisgpuhash` 的摘要校验（固件交接未证明时不做 MMIO）。
 
-## 5. 为什么不现在就写 C
+## 5. 第三方实现的交叉验证（外部证据，不是本机测量）
+
+另一个 polaris fork（`SUPCDF/ios16_on_polaris_mix2s`，分支 `d5ec4cdc`）里有
+一份 2659 行的 A630 上电实现 `0098-polaris-a630-gmu-bringup.patch`，包含
+GPUCC、RSC/PDC、GMU 启动、HFI 与 SMMU。用它的头文件表逐条对照我们推导的地址：
+
+| 我们的索引 | 它的写法 | 它的地址 | 我们的地址 |
+|---|---|---|---|
+| `0x23404` | `GMU_WORD(0x8c04)` | `0x0508d010` | `0x0508d010` |
+| `0x23408` | `GMU_WORD(0x8c08)` | `0x0508d020` | `0x0508d020` |
+| `0x23409` | `GMU_WORD(0x8c09)` | `0x0508d024` | `0x0508d024` |
+| `0x2340a` | `GMU_WORD(0x8c0a)` | `0x0508d028` | `0x0508d028` |
+| `0x2340b` | `GMU_WORD(0x8c0b)` | `0x0508d02c` | `0x0508d02c` |
+| `0x23501` | `GMU_WORD(0x8d01)` | `0x0508d404` | `0x0508d404` |
+| `0x23b07` | `GMU_WORD(0x9307)` | `0x0508ec1c` | `0x0508ec1c` |
+| `0x23b08` | `GMU_WORD(0x9308)` | `0x0508ec20` | `0x0508ec20` |
+
+它的注释写着"`GMU_WORD(n) = 4 * n`，n 已是厂商字索引减 `0x1a800`"，
+和我们从 `kgsl_gmu.c:1155` 推出的规则一致；八条全部逐字对上。
+`tools/polaris_gmu_csr.py` 把这张表做成了断言（`INDEPENDENT_WORDS`），
+改坏推导会直接测失败。
+
+**它还给了三条我们此前没有的经验观察**（来自它的提交说明与日志字符串，
+属于别人的真机结果，不是我们的测量）：
+
+- `RSC_STATUS0` bit16 在 `fastboot boot` 进入内核时**是 0**（RSC 已被 bootloader
+  留在唤醒态）；强行做一次 sleep/wake 会让 `RSCC_CONTROL_ACK` 变 0、
+  GMU 的 RPMh 投票被忽略——所以它只在 bit16 置位时才唤醒。
+- `HOST2GMU_INTR_EN_0..3` 在 fastboot 路径上是 0，OOB 位**到不了 CM3**，
+  即使 set/raw 寄存器有变化；要显式写 `0x c0ff0001` 才有 HFI 门铃。
+- PDC 的 TCS 序列（`SEQ_MEM` 5 字 + TCS1/TCS3 bank）在 fastboot 路径上
+  没被 bootloader 编程，需要自己写；这与 §2 里 PDC 窗口的用途互相印证。
+
+**边界**：那份实现的 README 仍然写着"没有 XNU GPU 上电、GMU/HFI…"，
+即作者自己也没有把它记为已验证完成。它的日志字符串（"GMU did not boot"、
+"RSC already awake"）说明代码在真机上跑过并留下了观测，但这不等于
+它已经成功上电。所以本文把它当**交叉证据**，不当**本机事实**；
+我们自己的只读探测仍按 §4 的拒绝条件执行。
+
+## 6. 为什么不现在就写 C
 
 两个理由，都是硬条件：
 
 - **0096 还没被 CI 编译过**。现在往 `bsd/dev/` 里再加一个与 MMIO 相关的编译单元，
   等于把两处未验证的东西叠在一起，出错时无法定位。
-- **§6 的未证项还缺出处**。写只读代码不需要证明"写是安全的"，但需要证明
-  "读是安全的"，而这需要 PDC/RPMh 侧的时钟与电源域事实。
+- **§7 的未证项还缺出处**。写只读代码不需要证明"写是安全的"，但需要证明
+  "读是安全的"。§5 的第三方实现提供了**别人的**观测（它在 GX 未起时读
+  `RSC_STATUS0`、`CONTROL_ACK`、`SEQ_BUSY` 并打印日志），但这不构成
+  我们自己对这台机器的证据；而且那几条日志是**失败路径**打出来的，
+  无法从中判断"读是否曾经踩到过没开时钟的窗口"。
 
-## 6. 仍未证（不得当作能力）
+## 7. 仍未证（不得当作能力）
 
 | 项 | 缺什么 |
 |---|---|
-| GX 关闭时读 GMU CSR 是否安全 | 需要说明 GMU 窗口的时钟由谁供给（RPMh/always-on 域），目前只有 DT 与代码结构，没有电源域出处 |
+| GX 关闭时读 GMU CSR 是否安全 | 厂商代码里读发生在 GMU 时钟已给的阶段；我们自己**没有**真机读数，只有第三方实现的日志声称可行（§5） |
 | `CONTROL_ACK` bit1 的时序语义 | 只在 `a6xx_rpmh_power_on_gpu()` 的轮询里见到用法，没有寄存器手册 |
-| `RSC_STATUS0` bit24 的方向 | 名字叫 "SDE clock gating off"，但置 1 表示"关"还是"已关"未证 |
-| `0x0b200000` 这个 3 MB PDC 窗口 | 本驱动不用它；它和 GMU 里的 `RSCC_PDC_*` 是什么关系未证 |
-| XNU 侧该窗口是否已被占用 | 需要在 XNU 里确认 `0x0506a000` 没有被 iBoot/其他驱动映射过 |
+| `RSC_STATUS0` bit16/bit24 的方向 | bit16「asleep」与 bit24 的方向都只有第三方实现的说法，没有寄存器手册 |
+| `0x0b200000` 窗口在 XNU 侧是否可访问 | 厂商是 Linux ioremap；XNU 的 `ml_io_map` 能否映射该地址未测 |
+| XNU 侧 GMU 窗口是否已被占用 | 需要在 XNU 里确认 `0x0506a000` 没有被 iBoot/其他驱动映射过 |
 
-## 7. 复现
+## 8. 复现
 
 ```sh
 # 从 MIUI boot.img 取设备树窗口（只读文件，不碰设备）
