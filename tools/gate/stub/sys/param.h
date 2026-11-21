@@ -1,0 +1,20 @@
+#ifndef _GATE_SYS_PARAM_H_
+#define _GATE_SYS_PARAM_H_
+/*
+ * The minimum <sys/param.h> polaris_gpu*.c rely on. This is a host stand-in,
+ * not a copy of XNU's header: it only has to make the kernel sources compile
+ * against the same types the kernel provides (bool, boolean_t, fixed widths).
+ */
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+typedef unsigned int boolean_t;
+
+#ifndef __printflike
+#define __printflike(fmtarg, firstvararg) \
+	__attribute__((__format__(__printf__, fmtarg, firstvararg)))
+#endif
+
+#endif
