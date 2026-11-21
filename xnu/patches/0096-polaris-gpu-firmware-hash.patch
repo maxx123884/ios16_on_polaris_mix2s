@@ -1,0 +1,641 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 979e96f..b02aa01 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -3,5 +3,6 @@ bsd/dev/polaris_touch_diag.c		standard
+ bsd/dev/polaris_touch_i2c.c		standard
+ bsd/dev/polaris_gpu_diag.c		standard
+ bsd/dev/polaris_gpu.c			standard
++bsd/dev/polaris_gpu_hash.c		standard
+ bsd/dev/polaris_gpu_validate.c		standard
+ bsd/dev/mem.c				standard
+diff --git a/bsd/dev/polaris_gpu.c b/bsd/dev/polaris_gpu.c
+index c7bd944..73199c2 100644
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -8,6 +8,7 @@
+ #include <sys/systm.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
++#include "polaris_gpu_hash.h"
+ #include "polaris_gpu_validate.h"
+ 
+ extern bool polaris_touch_i2c_board(void);
+@@ -230,6 +231,7 @@ void
+ polaris_gpu_init(void)
+ {
+ 	int optin = 0;
++	int hashopt = 0;
+ 	enum pg_status status;
+ 	struct pg_validate_result result;
+ 	struct pg_handoff handoff;
+@@ -252,15 +254,38 @@ polaris_gpu_init(void)
+ 	 */
+ 	status = polaris_gpu_read_handoff(&handoff);
+ 	if (status == PG_OK) {
+-		status = pg_validate_handoff(&handoff, polaris_gpu_expect, &result);
++		status = pg_validate_layout(&handoff, polaris_gpu_expect, &result);
+ 	}
+ 	if (status != PG_OK) {
+ 		printf("POLARIS GPU: handoff rejected: %s; no GPU access\n",
+ 		    pg_status_name(status));
+ 		goto fail;
+ 	}
+-	printf("POLARIS GPU: handoff accepted, %u blobs, %llu bytes in plan\n",
++	printf("POLARIS GPU: layout accepted, %u blobs, %llu bytes in plan\n",
+ 	    result.blobs_ok, (unsigned long long)result.mapped_bytes);
++
++	/*
++	 * Hashing reads the firmware pages. It is still not a power-on path:
++	 * no MMIO, no rail, no firmware execution. It is a separate opt-in
++	 * because mapping 96 KiB of reserved DRAM is the first thing this
++	 * driver does that a wrong address would turn into a panic.
++	 */
++	(void)PE_parse_boot_argn("polarisgpuhash", &hashopt, sizeof(hashopt));
++	if (hashopt == 1) {
++		status = polaris_gpu_hash_handoff(&handoff);
++		if (status == PG_OK) {
++			status = pg_validate_digests(&handoff, polaris_gpu_expect);
++		}
++		if (status != PG_OK) {
++			printf("POLARIS GPU: firmware not proven: %s; no GPU access\n",
++			    pg_status_name(status));
++			goto fail;
++		}
++		printf("POLARIS GPU: firmware proven against the pinned set\n");
++	} else {
++		printf("POLARIS GPU: firmware unhashed (polarisgpuhash=1 to prove)\n");
++	}
++
+ 	if (!polaris_gpu_enter(&polaris_gpu, POLARIS_GPU_FIRMWARE)) {
+ 		goto fail;
+ 	}
+diff --git a/bsd/dev/polaris_gpu_hash.c b/bsd/dev/polaris_gpu_hash.c
+new file mode 100644
+index 0000000..44bbdd5
+--- /dev/null
++++ b/bsd/dev/polaris_gpu_hash.c
+@@ -0,0 +1,116 @@
++/*
++ * Polaris A630 firmware hashing -- see polaris_gpu_hash.h for the contract.
++ *
++ * Two hardware facts shape this file:
++ *
++ * 1. The firmware pages are ADT-reserved DRAM, not free boot memory, so
++ *    ml_static_ptovirt() cannot reach them (it only knows regions the booter
++ *    released). This port maps every other physical range with ml_io_map(),
++ *    so the same primitive is used here.
++ *
++ * 2. ml_io_map() gives Device-nGnRnE attributes on arm64. Device memory
++ *    forbids unaligned accesses, so the copy is done with 32-bit reads into a
++ *    bounce buffer and a byte tail, never with memcpy() over the mapping.
++ *
++ * SHA-256 is the kernel's own: libkern/crypto/sha2.h, which 0023 already
++ * routes to the built-in LTC implementation for SWEET (there is no corecrypto
++ * kext on this port). No crypto code is duplicated here.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <libkern/crypto/sha2.h>
++
++#include "polaris_gpu_hash.h"
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++/* Bounce buffer for the Device-memory copy; one blob is hashed per chunk. */
++#define PG_HASH_CHUNK	256u
++
++static void
++polaris_gpu_copy_in(void *dst, vm_offset_t src, size_t len)
++{
++	volatile const uint32_t *words = (volatile const uint32_t *)(uintptr_t)src;
++	volatile const uint8_t *bytes = (volatile const uint8_t *)(uintptr_t)src;
++	uint8_t *out = dst;
++	size_t i;
++
++	/*
++	 * arm64 is little endian, so a 32-bit word holds the same four bytes in
++	 * the same order as the source. Keeping the loop at 32-bit keeps every
++	 * access naturally aligned for the Device mapping.
++	 */
++	for (i = 0; i + sizeof(uint32_t) <= len; i += sizeof(uint32_t)) {
++		uint32_t word = words[i / sizeof(uint32_t)];
++
++		out[i] = (uint8_t)(word & 0xffu);
++		out[i + 1] = (uint8_t)((word >> 8) & 0xffu);
++		out[i + 2] = (uint8_t)((word >> 16) & 0xffu);
++		out[i + 3] = (uint8_t)((word >> 24) & 0xffu);
++	}
++	for (; i < len; ++i) {
++		out[i] = bytes[i];
++	}
++}
++
++static enum pg_status
++polaris_gpu_hash_one(const struct pg_blob *blob, uint8_t out[PG_HASH_BYTES])
++{
++	uint8_t bounce[PG_HASH_CHUNK];
++	SHA256_CTX ctx;
++	vm_offset_t va;
++	uint64_t done;
++
++	/*
++	 * Caller already proved this range lies inside XNU-managed DRAM, which
++	 * the pure layer caps at PG_MAX_DRAM; only emptiness is left to reject.
++	 */
++	if (blob->bytes == 0) {
++		return PG_EINVAL;
++	}
++	va = ml_io_map((vm_offset_t)blob->pa, (vm_size_t)blob->bytes);
++	if (va == 0) {
++		return PG_EMAP;
++	}
++	SHA256_Init(&ctx);
++	for (done = 0; done < blob->bytes; ) {
++		size_t take = PG_HASH_CHUNK;
++
++		if (blob->bytes - done < (uint64_t)take) {
++			take = (size_t)(blob->bytes - done);
++		}
++		polaris_gpu_copy_in(bounce, va + (vm_offset_t)done, take);
++		SHA256_Update(&ctx, bounce, take);
++		done += take;
++	}
++	SHA256_Final(out, &ctx);
++	return PG_OK;
++}
++
++enum pg_status
++polaris_gpu_hash_handoff(struct pg_handoff *handoff)
++{
++	enum pg_status status;
++	uint32_t i;
++
++	if (handoff == NULL) {
++		return PG_EINVAL;
++	}
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		status = polaris_gpu_hash_one(&handoff->blob[i],
++		    handoff->blob[i].sha256);
++		if (status != PG_OK) {
++			/*
++			 * Clear the digests on failure so a later reader cannot
++			 * mistake a partially filled handoff for a proven one.
++			 */
++			memset(handoff->blob[i].sha256, 0, PG_HASH_BYTES);
++			return status;
++		}
++	}
++	return PG_OK;
++}
++
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/polaris_gpu_hash.h b/bsd/dev/polaris_gpu_hash.h
+new file mode 100644
+index 0000000..b1b1f6a
+--- /dev/null
++++ b/bsd/dev/polaris_gpu_hash.h
+@@ -0,0 +1,27 @@
++/*
++ * Polaris A630 firmware hashing. Read-only: maps the firmware bytes that the
++ * ADT already described, hashes them, and returns. It never writes to the
++ * source range, never touches a GPU register, and never starts firmware.
++ *
++ * The caller MUST have run pg_validate_layout() first: this file trusts that
++ * every blob address is page aligned and lies inside XNU-managed DRAM, so it
++ * can map without re-deriving those facts.
++ */
++#ifndef _BSD_DEV_POLARIS_GPU_HASH_H_
++#define _BSD_DEV_POLARIS_GPU_HASH_H_
++
++#include "polaris_gpu_validate.h"
++
++/*
++ * Fill handoff->blob[i].sha256 from the memory each blob describes.
++ *
++ * Returns PG_OK, PG_EINVAL, or PG_EMAP when a range cannot be mapped for
++ * reading. On any failure the caller must treat the digests as unproven; this
++ * function does not partially "repair" a handoff. Mapping failures are
++ * expected on an image whose payload does not describe the firmware at all,
++ * which is exactly the current 0090 layout.
++ */
++enum pg_status
++polaris_gpu_hash_handoff(struct pg_handoff *handoff);
++
++#endif /* _BSD_DEV_POLARIS_GPU_HASH_H_ */
+diff --git a/bsd/dev/polaris_gpu_validate.c b/bsd/dev/polaris_gpu_validate.c
+index 7a24edc..48b7f4d 100644
+--- a/bsd/dev/polaris_gpu_validate.c
++++ b/bsd/dev/polaris_gpu_validate.c
+@@ -16,7 +16,8 @@ static const char *const pg_status_text[] = {
+ 	"firmware blob missing from ADT",
+ 	"overlapping firmware allocations",
+ 	"firmware hashes unproven",
+-	"firmware hash mismatch"
++	"firmware hash mismatch",
++	"firmware not mappable for hashing"
+ };
+ 
+ const char *
+@@ -121,7 +122,7 @@ pg_expect_complete(const struct pg_expect *expect, size_t count)
+ }
+ 
+ enum pg_status
+-pg_validate_handoff(const struct pg_handoff *handoff,
++pg_validate_layout(const struct pg_handoff *handoff,
+     const struct pg_expect *expect, struct pg_validate_result *result)
+ {
+ 	uint64_t dram_end, zap_end, splash_end, mapped = 0;
+@@ -199,6 +200,23 @@ pg_validate_handoff(const struct pg_handoff *handoff,
+ 		mapped += reserve;
+ 	}
+ 
++	result->blobs_ok = PG_BLOB_COUNT;
++	result->mapped_bytes = mapped;
++	return PG_OK;
++}
++
++enum pg_status
++pg_validate_digests(const struct pg_handoff *handoff,
++    const struct pg_expect *expect)
++{
++	uint32_t i;
++
++	if (handoff == NULL || expect == NULL) {
++		return PG_EINVAL;
++	}
++	if (!pg_expect_complete(expect, PG_BLOB_COUNT)) {
++		return PG_EHASH_UNPROVEN;
++	}
+ 	/*
+ 	 * Layout alone never authorises firmware: the digests must be proven.
+ 	 * A zero digest in the handoff means these bytes were never hashed by
+@@ -214,8 +232,18 @@ pg_validate_handoff(const struct pg_handoff *handoff,
+ 			return PG_EHASH_MISMATCH;
+ 		}
+ 	}
+-
+-	result->blobs_ok = PG_BLOB_COUNT;
+-	result->mapped_bytes = mapped;
+ 	return PG_OK;
+ }
++
++enum pg_status
++pg_validate_handoff(const struct pg_handoff *handoff,
++    const struct pg_expect *expect, struct pg_validate_result *result)
++{
++	enum pg_status status;
++
++	status = pg_validate_layout(handoff, expect, result);
++	if (status != PG_OK) {
++		return status;
++	}
++	return pg_validate_digests(handoff, expect);
++}
+diff --git a/bsd/dev/polaris_gpu_validate.h b/bsd/dev/polaris_gpu_validate.h
+index 2b275ca..a6b3ccd 100644
+--- a/bsd/dev/polaris_gpu_validate.h
++++ b/bsd/dev/polaris_gpu_validate.h
+@@ -53,7 +53,8 @@ enum pg_status {
+ 	PG_EBLOB_MISSING,	/* ADT has no memory-map entry for this blob */
+ 	PG_EBLOB_OVERLAP,	/* two blobs share a page */
+ 	PG_EHASH_UNPROVEN,	/* table not filled, or bytes never hashed */
+-	PG_EHASH_MISMATCH	/* digest does not match the expectation */
++	PG_EHASH_MISMATCH,	/* digest does not match the expectation */
++	PG_EMAP			/* firmware could not be mapped to hash it */
+ };
+ 
+ struct pg_range {
+@@ -95,16 +96,38 @@ const char *
+ pg_status_name(enum pg_status status);
+ 
+ /*
+- * True when EXPECT carries the device-observed size for every blob and a
+- * non-zero digest for each. A partially filled table is never "good enough":
+- * unproven is treated as failure everywhere else in this contract.
++ * True when EXPECT carries a size and a non-zero digest for every blob. A
++ * partially filled table is never "good enough": unproven is treated as
++ * failure everywhere else in this contract.
+  */
+ bool
+ pg_expect_complete(const struct pg_expect *expect, size_t count);
+ 
+ /*
+- * Validate the handoff. Pure function: the inputs are never written, and
+- * RESULT is only written on PG_OK.
++ * Phase 1: ranges only. Proves the ADT layout is the pinned set, page aligned,
++ * inside XNU-managed DRAM, clear of the PAS13 carveout and the ABL splash, and
++ * non-overlapping. Digests are NOT inspected. Pure function: inputs are never
++ * written, RESULT is only written on PG_OK.
++ *
++ * This is the phase a caller may run before it has any way to hash memory, so
++ * a missing hash backend cannot be mistaken for a bad firmware layout.
++ */
++enum pg_status
++pg_validate_layout(const struct pg_handoff *handoff,
++    const struct pg_expect *expect, struct pg_validate_result *result);
++
++/*
++ * Phase 2: digests only. Returns PG_EHASH_UNPROVEN when the handoff carries a
++ * zero digest (these bytes were never hashed), PG_EHASH_MISMATCH when a digest
++ * was computed and disagrees. It does not re-check ranges.
++ */
++enum pg_status
++pg_validate_digests(const struct pg_handoff *handoff,
++    const struct pg_expect *expect);
++
++/*
++ * Both phases, in order: layout, then digests. Pure function, same contract as
++ * pg_validate_layout() plus the digest requirement.
+  */
+ enum pg_status
+ pg_validate_handoff(const struct pg_handoff *handoff,
+diff --git a/tools/hosthash/harness.c b/tools/hosthash/harness.c
+new file mode 100644
+index 0000000..72d47a3
+--- /dev/null
++++ b/tools/hosthash/harness.c
+@@ -0,0 +1,192 @@
++/*
++ * Host harness for bsd/dev/polaris_gpu_hash.c.
++ *
++ * The kernel file cannot be linked on a host (no ml_io_map, no libkern), so
++ * this harness supplies stubs and then checks the one thing that is easy to
++ * get wrong and impossible to see by reading: that the Device-memory copy
++ * reproduces the source bytes exactly, for the six real firmware sizes and for
++ * a deliberately unaligned tail.
++ *
++ * SHA-256 is stubbed out on purpose. Its correctness is XNU's problem (0023);
++ * this test covers our copy loop only.
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <sys/param.h>
++#include <libkern/crypto/sha2.h>
++
++#include "polaris_gpu_hash.h"
++
++/* ---- stubs ------------------------------------------------------------- */
++
++static uint8_t g_sink[1u << 20];
++static size_t g_sink_len;
++
++void
++SHA256_Init(SHA256_CTX *ctx)
++{
++	/*
++	 * Deliberately does NOT reset g_sink_len: the kernel calls Init once per
++	 * blob, and this harness needs one continuous record to prove that each
++	 * blob's bytes arrive intact at the hash function.
++	 */
++	(void)ctx;
++}
++
++void
++SHA256_Update(SHA256_CTX *ctx, const void *data, size_t len)
++{
++	(void)ctx;
++	if (g_sink_len + len > sizeof(g_sink)) {
++		printf("FAIL: sink overflow\n");
++		exit(1);
++	}
++	memcpy(g_sink + g_sink_len, data, len);
++	g_sink_len += len;
++}
++
++void
++SHA256_Final(void *digest, SHA256_CTX *ctx)
++{
++	(void)ctx;
++	memset(digest, 0xa5, PG_HASH_BYTES);
++}
++
++/* Identity mapping: this harness stores "physical" addresses as pointers. */
++vm_offset_t
++ml_io_map(vm_offset_t phys_addr, vm_size_t size)
++{
++	(void)size;
++	return phys_addr;
++}
++
++/* ---- test -------------------------------------------------------------- */
++
++static unsigned int failures;
++
++#define CHECK(cond) do {						\
++	if (!(cond)) {							\
++		printf("FAIL %d: %s\n", __LINE__, #cond);		\
++		failures++;						\
++	}								\
++} while (0)
++
++/* The six sizes of the pinned MIUI 12.5.1 set, in enum pg_blob_id order. */
++static const uint64_t pinned[PG_BLOB_COUNT] = {
++	31980, 32768, 6684, 148, 6536, 1968
++};
++
++static void
++fill(uint8_t *p, size_t n, unsigned int seed)
++{
++	size_t i;
++
++	for (i = 0; i < n; ++i) {
++		p[i] = (uint8_t)((i * 31u + seed * 17u) & 0xffu);
++	}
++}
++
++static void
++run_case(const uint64_t *sizes, const char *label)
++{
++	struct pg_handoff handoff;
++	uint8_t *src[PG_BLOB_COUNT];
++	size_t base = g_sink_len;	/* this run starts where the last ended */
++	uint32_t i;
++
++	memset(&handoff, 0, sizeof(handoff));
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		src[i] = malloc((size_t)sizes[i]);
++		CHECK(src[i] != NULL);
++		if (src[i] == NULL) {
++			return;
++		}
++		fill(src[i], (size_t)sizes[i], i);
++		handoff.blob[i].pa = (uint64_t)(uintptr_t)src[i];
++		handoff.blob[i].bytes = sizes[i];
++	}
++
++	CHECK(polaris_gpu_hash_handoff(&handoff) == PG_OK);
++
++	/* Each blob is hashed in order, so the sink must be the concatenation. */
++	{
++		size_t at = 0;
++
++		for (i = 0; i < PG_BLOB_COUNT; ++i) {
++			size_t n = (size_t)sizes[i];
++
++			CHECK(g_sink_len >= base + at + n);
++			if (memcmp(g_sink + base + at, src[i], n) != 0) {
++				size_t j;
++
++				for (j = 0; j < n; ++j) {
++					if (g_sink[base + at + j] != src[i][j]) {
++						printf("FAIL %s: blob %u differs at %zu "
++						    "(sink %zu, want %zu)\n",
++						    label, i, j, g_sink_len, at + n);
++						break;
++					}
++				}
++				failures++;
++			}
++			at += n;
++		}
++		CHECK(g_sink_len == base + at);
++	}
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		CHECK(!(handoff.blob[i].sha256[0] == 0 &&
++		    handoff.blob[i].sha256[1] == 0));
++	}
++
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		free(src[i]);
++	}
++}
++
++int
++main(void)
++{
++	uint64_t tail[PG_BLOB_COUNT];
++	uint32_t i;
++
++	run_case(pinned, "pinned set");
++
++	/* One byte, then three: the word loop must stop and the tail take over. */
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		tail[i] = pinned[i];
++	}
++	tail[0] = 31981;	/* was a multiple of 4; now 1 byte of tail */
++	tail[3] = 151;		/* was 148; now 3 bytes of tail */
++	run_case(tail, "word tail");
++
++	/* A zero-length blob is invalid, not an empty hash. */
++	{
++		struct pg_handoff handoff;
++
++		memset(&handoff, 0, sizeof(handoff));
++		handoff.blob[0].bytes = 0;
++		CHECK(polaris_gpu_hash_handoff(&handoff) == PG_EINVAL);
++		CHECK(polaris_gpu_hash_handoff(NULL) == PG_EINVAL);
++	}
++
++	/* A refused mapping must not leave a half-filled handoff behind. */
++	{
++		struct pg_handoff handoff;
++
++		memset(&handoff, 0, sizeof(handoff));
++		handoff.blob[0].pa = 0;	/* ml_io_map returns 0 for pa 0 */
++		handoff.blob[0].bytes = 4096;
++		CHECK(polaris_gpu_hash_handoff(&handoff) == PG_EMAP);
++		CHECK(handoff.blob[0].sha256[0] == 0);
++	}
++
++	if (failures != 0) {
++		printf("%u check(s) failed\n", failures);
++		return 1;
++	}
++	printf("hash copy path matches the source for every pinned size\n");
++	return 0;
++}
+diff --git a/tools/hosthash/stub/libkern/crypto/sha2.h b/tools/hosthash/stub/libkern/crypto/sha2.h
+new file mode 100644
+index 0000000..9981497
+--- /dev/null
++++ b/tools/hosthash/stub/libkern/crypto/sha2.h
+@@ -0,0 +1,10 @@
++#ifndef _STUB_SHA2_H_
++#define _STUB_SHA2_H_
++#include <stdint.h>
++#include <stddef.h>
++/* Stand-in for XNU's SHA-256: the harness only inspects what is fed to it. */
++typedef struct { uint8_t opaque[256]; } SHA256_CTX;
++void SHA256_Init(SHA256_CTX *);
++void SHA256_Update(SHA256_CTX *, const void *, size_t);
++void SHA256_Final(void *, SHA256_CTX *);
++#endif
+diff --git a/tools/hosthash/stub/sys/param.h b/tools/hosthash/stub/sys/param.h
+new file mode 100644
+index 0000000..eaaf6d0
+--- /dev/null
++++ b/tools/hosthash/stub/sys/param.h
+@@ -0,0 +1,8 @@
++#ifndef _STUB_SYS_PARAM_H_
++#define _STUB_SYS_PARAM_H_
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++typedef uintptr_t vm_offset_t;
++typedef uintptr_t vm_size_t;
++#endif
+diff --git a/tools/hosthash/stub/sys/systm.h b/tools/hosthash/stub/sys/systm.h
+new file mode 100644
+index 0000000..110ef2c
+--- /dev/null
++++ b/tools/hosthash/stub/sys/systm.h
+@@ -0,0 +1,7 @@
++#ifndef _STUB_SYS_SYSTM_H_
++#define _STUB_SYS_SYSTM_H_
++#include <stdint.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <string.h>
++#endif
+diff --git a/tools/test_polaris_gpu_validate.c b/tools/test_polaris_gpu_validate.c
+index 2002058..fe5530f 100644
+--- a/tools/test_polaris_gpu_validate.c
++++ b/tools/test_polaris_gpu_validate.c
+@@ -188,6 +188,32 @@ main(void)
+ 	memset(handoff.blob[1].sha256, 0, PG_HASH_BYTES);
+ 	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_UNPROVEN);
+ 
++	/*
++	 * 9c. The two phases are usable on their own. That is what lets the
++	 * driver prove the layout while it still has no way to hash memory, and
++	 * what keeps "layout wrong" and "bytes unhashed" from collapsing into
++	 * one status.
++	 */
++	fixture(&handoff, expect);
++	memset(handoff.blob[0].sha256, 0, PG_HASH_BYTES);
++	EXPECT_STATUS(pg_validate_layout(&handoff, expect, &result), PG_OK);
++	CHECK(result.blobs_ok == PG_BLOB_COUNT);
++	EXPECT_STATUS(pg_validate_digests(&handoff, expect), PG_EHASH_UNPROVEN);
++	fixture(&handoff, expect);
++	handoff.blob[3].sha256[0] ^= 0xff;
++	EXPECT_STATUS(pg_validate_layout(&handoff, expect, &result), PG_OK);
++	EXPECT_STATUS(pg_validate_digests(&handoff, expect), PG_EHASH_MISMATCH);
++	fixture(&handoff, expect);
++	memset(expect[0].sha256, 0, PG_HASH_BYTES);
++	EXPECT_STATUS(pg_validate_layout(&handoff, expect, &result), PG_EHASH_UNPROVEN);
++	EXPECT_STATUS(pg_validate_digests(&handoff, expect), PG_EHASH_UNPROVEN);
++	fixture(&handoff, expect);
++	EXPECT_STATUS(pg_validate_layout(NULL, expect, &result), PG_EINVAL);
++	EXPECT_STATUS(pg_validate_layout(&handoff, NULL, &result), PG_EINVAL);
++	EXPECT_STATUS(pg_validate_layout(&handoff, expect, NULL), PG_EINVAL);
++	EXPECT_STATUS(pg_validate_digests(NULL, expect), PG_EINVAL);
++	EXPECT_STATUS(pg_validate_digests(&handoff, NULL), PG_EINVAL);
++
+ 	/* 10. A wrong digest is refused even when every range is perfect. */
+ 	fixture(&handoff, expect);
+ 	handoff.blob[3].sha256[7] ^= 0x01;
+@@ -217,7 +243,7 @@ main(void)
+ 	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_SIZE);
+ 
+ 	/* 13. Every status has a name. */
+-	for (status = PG_OK; status <= PG_EHASH_MISMATCH; ++status) {
++	for (status = PG_OK; status <= PG_EMAP; ++status) {
+ 		CHECK(pg_status_name(status) != NULL);
+ 	}
+ 

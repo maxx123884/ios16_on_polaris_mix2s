@@ -96,6 +96,10 @@ python upstream/tools/polaris_gpu_expect_table.py --firmware build/fw-miui
   C 校验器 39 处断言（28 次状态期望 + 11 次布尔检查）全过；Python 主机测试 71 项全过；端到端用真表驱动校验器，
   本套返回 `PG_OK`（6 blobs / 131072 B），换 32136 的 SQE 返回 `PG_EBLOB_SIZE`，
   翻一个字节返回 `PG_EHASH_MISMATCH`，摘要全零返回 `PG_EHASH_UNPROVEN`。
+- 摘要后端骨架：`xnu/patches/0096-polaris-gpu-firmware-hash.patch`（11 文件 +477/−14），
+  校验器拆布局/摘要两阶段，新增 `bsd/dev/polaris_gpu_hash.c`（`ml_io_map` + 内核
+  `SHA256_*`），开关 `polarisgpuhash=1` 默认关闭。主机 harness 验证拷贝路径；库与映射
+  的可用性须由 CI 编内核确认。
 - 仍然**没有上电路径**：固件阶段认可后照旧停在 `firmware backend not implemented`。
 - 即使固件全齐，**Metal 上限不变**：界面加速仍无 AIR→Adreno 后端；这一步只解锁
   "GMU 能装载、CP 能跑一条命令"的硬件里程碑。

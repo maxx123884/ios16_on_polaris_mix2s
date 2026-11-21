@@ -53,8 +53,15 @@ if [ ! -f "$TREE/bsd/dev/polaris_gpu_validate.c" ] || \
 	exit 0
 fi
 
-out=${TMPDIR:-/tmp}/pgv.$$
-trap 'rm -f "$out"' EXIT INT TERM
+out=${TMPDIR:-/tmp}/pgv.$$.exe
+outh=${TMPDIR:-/tmp}/pgh.$$.exe
+trap 'rm -f "$out" "$outh"' EXIT INT TERM
 "$@" -std=c99 -Wall -Wextra -Werror -o "$out" \
 	"$TREE/tools/test_polaris_gpu_validate.c" "$TREE/bsd/dev/polaris_gpu_validate.c"
 "$out"
+
+echo "== c: polaris_gpu_hash host harness (stubbed libkern/vm)"
+"$@" -std=c99 -Wall -Wextra -Werror -Wpedantic -DARM64_BOARD_CONFIG_SWEET \
+	-I "$TREE/tools/hosthash/stub" -I "$TREE/bsd/dev" -o "$outh" \
+	"$TREE/tools/hosthash/harness.c" "$TREE/bsd/dev/polaris_gpu_hash.c"
+"$outh"
