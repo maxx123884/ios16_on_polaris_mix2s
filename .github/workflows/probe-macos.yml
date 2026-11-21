@@ -1,0 +1,28 @@
+# Temporary probe: which GitHub-hosted runner labels can this account use?
+#
+# The xnu workflow dies in 2 s with
+#   "The configuration 'macos-14-arm64-us-default' is not supported"
+# which says nothing about whether an *Intel* macOS image would work. This
+# asks all four labels at once, plus ubuntu as a control: if ubuntu runs and
+# every macOS job fails, the block is macOS-specific (account/plan); if nothing
+# runs, it is not about macOS at all.
+#
+# Delete this file once it has answered the question.
+name: probe-macos
+
+on: push
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [macos-13, macos-14, macos-15, ubuntu-latest]
+    runs-on: ${{ matrix.label }}
+    steps:
+      - name: Report the runner
+        run: |
+          uname -a
+          sw_vers || true
+          echo "label=${{ matrix.label }}"
+          xcodebuild -version || true
