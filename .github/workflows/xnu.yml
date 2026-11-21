@@ -29,7 +29,10 @@ env:
   DXB_REPO: https://github.com/blacktop/darwin-xnu-build
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
-  KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
+  # RELEASE for the fork's boot image: a DEVELOPMENT kernel keeps symbols and
+  # produces a 16.7 MB payload, which overruns the DTB at 0x1dea000. The 0090
+  # image that booted on the phone is RELEASE and carries an 11.7 MB payload.
+  KERNEL_CONFIG: ${{ inputs.kernel_config || 'RELEASE' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
 
 jobs:
