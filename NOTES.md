@@ -72,8 +72,17 @@ in `__TEXT_EXEC,__text` - `_polaris_gpu_init` 0xfffffe00074f61a4, `_polaris_gpu_
 `_pg_validate_digests`, and the strings "POLARIS GPU: acceleration unavailable", "firmware proven",
 "firmware unhashed". So 0093-0096 were applied (not skipped), `-DARM64_BOARD_CONFIG_SWEET` reached
 bsd/dev (the gate body is behind that `#if`), and the linker kept the entry point. The kernel is 32,240 B
-larger than the 0090 release. Still unproven: anything on the device - this kernel has never been
-booted, and no image containing it has been built.
+larger than the 0090 release. Still unproven: anything on the device. The image has since been built host-side (2026-11-22 ~03:35,
+`research/polaris/boot-image-0096-ci.zh-CN.md`): CI run `44940183357` with `kernel_config=RELEASE`
+(a DEVELOPMENT payload is 16,708,880 B and would overwrite the DTB at 0x1dea000; RELEASE is
+11,820,176 B with 2,769,776 B headroom). Parts: shim Image 225,280 B from zig; DTB tail 6,856,239 B =
+the 14 Polaris variants of the stock boot.img's 65 (all 65 would make a 47 MB image; 0090 was 18 MB);
+payload with the six firmware blobs byte-checked against their /chosen/memory-map entries.
+`build/shim-polaris-xnu-0096ci.img` 18,698,240 B sha256 `3fdfd374...` (0090 was 18,042,880 B). The
+cmdline carries `polarisgpu=1 polarisgpuhash=1`, so booting it runs the gate and the hashes
+immediately; dropping those two words makes it behave like 0090. Unpack round-trip verified
+(`cmp` ramdisk == payload). Never booted. The ADT lacks `/product` because `research/ipsw-x/d22ap.adt`
+is still missing, so iPhone X identity is incomplete - the gate does not depend on it.
 
 
 ## Agent handoff / active work (2026-10-15, latest)
