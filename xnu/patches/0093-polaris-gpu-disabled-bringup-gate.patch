@@ -22,16 +22,37 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
  	sweet_usb_probe();
  	return 0;
  }
+diff --git a/bsd/dev/polaris_gpu.h b/bsd/dev/polaris_gpu.h
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/polaris_gpu.h
+@@ -0,0 +1,15 @@
++/*
++ * Polaris A630 bring-up gate. The gate lives in polaris_gpu.c; this header
++ * exists so that definition has a prototype in scope, which the kernel's
++ * -Wmissing-prototypes (part of -Weverything -Werror) requires.
++ */
++#ifndef _BSD_DEV_POLARIS_GPU_H_
++#define _BSD_DEV_POLARIS_GPU_H_
++
++/*
++ * Called once from the root mount, before anything else is initialised.
++ * Returns immediately unless this is a Polaris board and boot-args opt in.
++ */
++void polaris_gpu_init(void);
++
++#endif /* _BSD_DEV_POLARIS_GPU_H_ */
 diff --git a/bsd/dev/polaris_gpu.c b/bsd/dev/polaris_gpu.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/polaris_gpu.c
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,121 @@
 +/*
 + * Polaris A630 bring-up gate. This is NOT a GPU power driver.
 + * Deliberately does not map registers or pass command buffers to the GPU.
 + * Never replace the CPU framebuffer unless a fence and presentation work.
 + */
++#include "polaris_gpu.h"
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +#include <sys/param.h>
 +#include <sys/systm.h>

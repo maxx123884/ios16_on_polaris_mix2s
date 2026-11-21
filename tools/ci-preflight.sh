@@ -92,6 +92,10 @@ if [ -z "$BASE" ]; then
 	fi
 fi
 changed=$(git -C "$ROOT" diff --name-only "$BASE" -- xnu/patches tools 2>/dev/null || true)
+# New files are not in any diff yet, and those are the ones a Windows checkout
+# writes with CRLF first. Include them so the check covers what will be pushed.
+untracked=$(git -C "$ROOT" ls-files --others --exclude-standard -- xnu/patches tools 2>/dev/null || true)
+changed=$(printf '%s\n%s\n' "$changed" "$untracked" | sed '/^$/d' | sort -u)
 if [ -z "$changed" ]; then
 	note "no files differ from $BASE; skipping hygiene checks"
 else
@@ -233,6 +237,34 @@ if [ -n "$PG_BASE" ]; then
 			bad "0094 does not apply to $PG_BASE"
 		fi
 	fi
+fi
+
+# ------------------------------------------ syntax against the real headers
+# The only thing that compiles bsd/dev/polaris_gpu*.c is CI, unless a checkout
+# of the tag CI builds is around with xnu/patches/*.patch applied
+# (tools/polaris_kernel_syntax.py --apply makes one). With it, the header
+# chain and the -Weverything -Werror surface are checked here instead.
+XNU_TREE=${PG_XNU:-}
+if [ -z "$XNU_TREE" ]; then
+	for cand in "$ROOT/../build/xnu-8796.141.3" "$ROOT/../build/xnu-141"; do
+		if [ -f "$cand/bsd/dev/polaris_gpu.h" ]; then
+			XNU_TREE=$cand
+			break
+		fi
+	done
+fi
+if [ -n "$XNU_TREE" ]; then
+	if "$PY" "$ROOT/tools/polaris_kernel_syntax.py" --tree "$XNU_TREE" \
+		>"$ROOT/../build/preflight-syntax.log" 2>&1; then
+		ok "polaris_gpu*.c compile against $(basename "$XNU_TREE") headers"
+	else
+		bad "polaris_gpu*.c do not compile against the real headers:"
+		grep -E 'error:|FAIL' "$ROOT/../build/preflight-syntax.log" | head -6 |
+			sed 's/^/        /'
+		note "full output in build/preflight-syntax.log"
+	fi
+else
+	note "skipped the real-header check (set PG_XNU to a patched xnu tree)"
 fi
 
 # ----------------------------------------------------------------- host tests

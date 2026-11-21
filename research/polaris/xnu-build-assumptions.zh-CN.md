@@ -80,3 +80,55 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 这三条都不是主机测试能替代的。在 CI 跑过之前，0096 只能算“有出处、有主机测试”，
 不能算“可编译”。
+
+## 7. 把三个源文件对真头文件编一遍（2026-11-22）
+
+§6 的第一条里，最可能先炸的是“我们自己的代码在真头文件下能不能过 `-Werror`”，
+那一半不需要 CI：把 `xnu-8796.141.3` 的树取下来、打上补丁，用内核自己的编译选项
+直接编 `bsd/dev/polaris_gpu*.c` 即可。
+
+```sh
+git clone --depth 1 -b xnu-8796.141.3 \
+  https://github.com/apple-oss-distributions/xnu ../build/xnu-141   # 97 MB
+python3 tools/polaris_kernel_syntax.py --tree ../build/xnu-141 --apply
+```
+
+工具做的事，以及每一件的理由：
+
+| 步骤 | 为什么必须这么做 |
+|---|---|
+| 打全部 `xnu/patches/*.patch` | 三个源文件由 0093/0094/0096 创建；`bsd/conf/files` 也只是补丁的产物 |
+| 把 `osfmk/arm` + `osfmk/arm64` 拼成 `machine/` | 内核构建里 `osfmk/machine` 是 make 生成的软链接，树里没有 |
+| 用 `tools/kernel-headers/string.h` | 内核的 `<string.h>` 来自 macOS SDK（`-nostdinc` 后由 SDK 补），zig 没有 SDK |
+| `bsd/conf/Makefile.template` 的 `-D` 集合 | 少了 `-DBSD_BUILD` 等，`sys/types.h` 会走另一条分支，检查比 CI 更松 |
+| `makedefs/MakeInc.def` 的 `-Weverything -Werror` 与全部 `-Wno-` | 内核就是这套；顺序有意义（先整组关，再单独开 `-Wpointer-arith`） |
+| 先编 `tools/kernel-headers/baseline.c` 做对照 | 只含我们依赖的六个系统头。它编不过就说明环境不对，此时我们的失败不算数 |
+
+结果：
+
+```
+ok    control baseline.c compiles with the same flags (header chain is sound)
+ok    polaris_gpu.c compiles against xnu-8796.141.3 headers (1 warning(s))
+ok    polaris_gpu_hash.c compiles against xnu-8796.141.3 headers (clean)
+ok    polaris_gpu_validate.c compiles against xnu-8796.141.3 headers (clean)
+```
+
+**它抓到一个真问题**：`polaris_gpu_init` 在定义处没有原型，`-Wmissing-prototypes`
+（`-Weverything` 的一部分）会判 `-Werror` 失败。主机 gate 编得过去是因为它用的是
+桩头文件，CI 会用真头文件——这条只在真头上出现。修法是新增 `bsd/dev/polaris_gpu.h`
+放原型，`polaris_gpu.c` 包含它（0093 里一并加上）。
+
+### 这个检查不覆盖什么
+
+- `-DBSD_KERNEL_PRIVATE`。`bsd/conf/Makefile.template` 对每个 bsd 源都加它，但它让
+  `sys/systm.h` 拉进 `sys/tty.h` 等内核私有面，那需要 `-include meta_features.h` 和
+  构建期生成的头。实测：打开这个宏后，`polaris_gpu.c` 与一个原生 bsd 源都在 XNU 自己的
+  `tty.h` 里报同样的错——所以缺口在环境，不在我们的代码。工具因此不传它，覆盖的是
+  非私有面，而我们的原型与类型全在非私有面上。
+- 链接（`ml_io_map` 是否可达）、`meta_features.h` 里的 `CONFIG_*`、其余 90 多个补丁
+  的文件是否都能过 —— 仍然只能由 CI 证明。
+- 三个“clang 版本差”警告被显式关掉：本机是 zig 的 clang 22，CI 是 Apple clang 15。
+  `-Wunsafe-buffer-usage`（clang 16 才有）、`-Wshadow-header`、`-Wreserved-identifier`
+  都只打在 Apple 自己的 typedef（`bsd/arm/_types.h`）和 corecrypto 头上，与本项目无关；
+  它们的名字集中在 `TOOLCHAIN_GAP`，注释里写了理由。
+
