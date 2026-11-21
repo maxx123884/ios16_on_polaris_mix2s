@@ -50,6 +50,10 @@ sh tools/ci-preflight.sh \
   --pg-base ../build/pgbase-polaris_gpu.c
 ```
 
+推送目标要注意账号：`origin` 是 `luuu20309/ios16_on_polaris_mix2s`，而本机浏览器/GCM 登录的是
+`maxx123884`（对该仓库 403）。`maxx123884/ios16_on_polaris_mix2s` 是同源 fork，推它可以；但那个
+账号拿不到 `macos-14`，需要把 `runs-on` 改成 `macos-15`（仅 fork，上游别推）。
+
 如果本地有 `../build/xnu-141`（8796.141.3 的树，已打补丁），预检会顺带用真正的
 内核头文件把 `bsd/dev/polaris_gpu*.c` 编一遍——那一项能提前顶掉整颗内核编译里
 最可能先炸的部分（原型、类型、`-Werror`），代价是几十秒而不是一次推送：
@@ -72,6 +76,10 @@ done
 
 `darwin-xnu-build/build.sh` 打不上就只打一条 warning 继续。**绿色的 run 不代表
 0096 被应用了**，只代表"没打上的补丁也照样编过了"。
+
+而且**别用眼睛判断这三条**：GitHub 的日志接口对未认证请求返回 403，能匿名拿到的是
+artifact 列表。更硬的证据是从 artifact 里下载 `kernel.development.sweet`，在本地用符号表
+和字符串验证——这条已经在 2026-11-22 走通过，见 [编译假设](<xnu-build-assumptions.zh-CN.md>) §8。
 
 ## 4. 判读一次 run 的结果
 
@@ -96,6 +104,7 @@ done
 | 补丁命名与 glob | 96 个 `.patch` 编号唯一；`*.sh` 有 3 个（工作流 `cp ... *.sh` 不会因空 glob 失败） |
 | 主机测试 | 141 项 Python + 51 条 C 断言 + gate 7 场景 + 哈希 harness 全过 |
 | 三个源文件对真头文件编译 | `-Weverything -Werror` 下 0 error，符号表也读回查过（见 [编译假设](<xnu-build-assumptions.zh-CN.md>) §7） |
+| 整颗内核（0093–0096 已在里面） | [run 44937910125](https://github.com/maxx123884/ios16_on_polaris_mix2s/actions/runs/44937910125) success；`polaris_gpu_init` 在 `kernel.development.sweet` 的 `__TEXT_EXEC,__text`（见 §8） |
 
 `bsd/conf/files` 的 hunk 是在本地一份 6 行的合成副本上生成的（`@@ -3,4`），
 行号与真实文件（596 行）不符；`git apply` 靠上下文定位，实测能落到真实位置

@@ -72,20 +72,21 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 | Python 主机测试 | 87 项全过 |
 | 补丁规模 | 12 文件 +492/−14（原 11 文件 +477/−14） |
 
-## 6. CI 仍然必须证明的事
+## 6. CI 已经回答了这三件事（2026-11-22，run 44937910125）
 
-- 整颗内核在 macOS 14 + Xcode 15 下能否编过（头文件解析、`-Werror`、链接顺序）；
-- `bsd/conf/files` 的编译标志是否让 `-DARM64_BOARD_CONFIG_SWEET` 进到 `bsd/dev`；
-- `ml_io_map` 在内核链接时是否可达（它由 osfmk 提供，bsd 静态链入，预期可达但未证）。
+- 整颗内核编过了：`Build` 步骤 success，`kernel.development.sweet` 17,256,176 B；
+- `-DARM64_BOARD_CONFIG_SWEET` 确实进到了 `bsd/dev`：门的函数体整个在
+  `#if defined(ARM64_BOARD_CONFIG_SWEET)` 里面，宏没定义的话文件会编成空对象、符号不会存在；
+- `ml_io_map` 链接可达：哈希路径调它，内核若缺符号链接就会失败。
 
-这三条都不是主机测试能替代的。在 CI 跑过之前，0096 只能算“有出处、有主机测试”，
-不能算“可编译”。
+证据不是"绿色 run"，而是符号表：见 §8。剩下的只有真机执行——这个内核从未被启动过。
 
 ## 7. 把三个源文件对真头文件编一遍（2026-11-22）
 
-§6 的第一条里，最可能先炸的是“我们自己的代码在真头文件下能不能过 `-Werror`”，
+整颗内核里最可能先炸的，是“我们自己的代码在真头文件下能不能过 `-Werror`”，
 那一半不需要 CI：把 `xnu-8796.141.3` 的树取下来、打上补丁，用内核自己的编译选项
-直接编 `bsd/dev/polaris_gpu*.c` 即可。
+直接编 `bsd/dev/polaris_gpu*.c` 即可。它比 §6 的 CI 结果早几个小时给出同一类答案，
+而且能在没有任何推送的情况下重跑。
 
 ```sh
 git clone --depth 1 -b xnu-8796.141.3 \
@@ -169,3 +170,35 @@ ok    polaris_gpu_validate.c compiles against xnu-8796.141.3 headers (clean)
   都只打在 Apple 自己的 typedef（`bsd/arm/_types.h`）和 corecrypto 头上，与本项目无关；
   它们的名字集中在 `TOOLCHAIN_GAP`，注释里写了理由。
 
+## 8. CI 的编译结果与符号证据（2026-11-22）
+
+第一次推送落在 fork（`maxx123884/ios16_on_polaris_mix2s`，与 `origin` 同源，快进 22 个提交；
+`origin` 属 `luuu20309`，本机登录的 `maxx123884` 没有写权限）。fork 的 run 全部 2 秒被取消：
+
+```
+The configuration 'macos-14-arm64-us-default' is not supported
+```
+
+排查过程都是可复现的：工作流 `state=active`、仓库设置 "Allow all actions" 选中 → 不是禁用；
+手动 `workflow_dispatch` 同样秒取消 → 不是并发；一个临时探针工作流（`macos-13/14/15` + `ubuntu-latest`
+各跑一行 `uname -a`）显示 **`macos-15` 与 `ubuntu-latest` 能跑、`macos-13` 一直排队、`macos-14` 不可用**。
+把 `runs-on` 改成 `macos-15`（提交 `6299e9d`，**仅 fork**，上游仍是 `macos-14`）后整颗内核 ~8 分钟编完——
+工作流注释里担心的 Xcode 16 `iig`（`IORPC.kernelContent`）没有造成失败。
+
+产物与验证（`kernel.development.sweet` 从 run 的 artifact 下载）：
+
+| 项 | 值 |
+|---|---|
+| 大小 / sha256 | 17,256,176 B / `13d7306f…046f`（与 run 的 `SHA256SUMS` 一致；0090 发布版是 17,223,936 B，+32,240 B） |
+| 架构 | Mach-O `cputype=0x100000c`（arm64）、`MH_EXECUTE`、67,338 条符号 |
+| `_polaris_gpu_init` | `__TEXT_EXEC,__text`，`0xfffffe00074f61a4` |
+| `_polaris_gpu_hash_handoff` | `__TEXT_EXEC,__text`，`0xfffffe00074f6674` |
+| `_pg_validate_layout` / `_pg_validate_handoff` | `0xfffffe00074f6ef8` / `0xfffffe00074f7374` |
+| 另有 | `_polaris_gpu_diag`、`_pg_status_name`、`_pg_expect_complete`、`_pg_validate_digests` |
+| 字符串 | `POLARIS GPU: acceleration unavailable`、`firmware proven`、`firmware unhashed` |
+
+这三行合起来才是"补丁真的生效"：符号存在 → 0093/0094/0096 被应用（工作流打不上补丁时只会
+warning 跳过，绿色本身不证明任何事）；符号在 `__TEXT_EXEC,__text` → 我们的代码是按 arm64 编译
+并链进内核的，不是残留数据；字符串在 → 那几条 `printf` 的字节确实躺在镜像里。
+
+**仍未证明**：这个内核从未被启动过；含它的 boot 镜像还没构建；GPU 依旧零写入。
