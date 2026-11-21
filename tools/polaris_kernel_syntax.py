@@ -82,7 +82,17 @@ TOOLCHAIN_GAP = (
 )
 
 # Codegen flags from MakeInc.def CFLAGS_GEN that change what the parser sees.
-CODEGEN = ('-fno-builtin', '-ftrivial-auto-var-init=zero', '-fno-common')
+#
+# -fno-sanitize=all and -fno-stack-protector are NOT from the kernel: they
+# undo two things this compiler does on its own. zig's clang instruments every
+# object with UBSan by default - `int f(int a) { int b = a * 4; return b; }`
+# comes back importing __ubsan_handle_mul_overflow - and adds the stack-guard
+# imports. The kernel picks its own UBSan list per config (MakeInc.def
+# UBSAN_CHECKS) and links its own runtime, so leaving the defaults on would
+# make these objects differ from CI's for no reason and bury the externals we
+# actually call under sanitizer handlers. Neither flag changes a diagnostic.
+CODEGEN = ('-fno-builtin', '-ftrivial-auto-var-init=zero', '-fno-common',
+           '-fno-sanitize=all', '-fno-stack-protector')
 
 # search path: the kernel build's -I set, in the order make uses it.
 INCLUDE_DIRS = ('bsd', 'osfmk', 'libkern', 'pexpert', 'iokit',

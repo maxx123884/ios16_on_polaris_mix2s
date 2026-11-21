@@ -40,6 +40,12 @@ class Flags(unittest.TestCase):
                        '-DLP64_DEBUG=0', '-DARM64_BOARD_CONFIG_SWEET=1'):
             self.assertIn(define, ks.BSD_DEFINES)
 
+    def test_instrumentation_is_switched_off(self):
+        # zig's clang turns UBSan on by default and imports __ubsan_handle_*;
+        # the kernel uses its own list, so the check must not inherit zig's.
+        self.assertIn('-fno-sanitize=all', ks.CODEGEN)
+        self.assertIn('-fno-stack-protector', ks.CODEGEN)
+
     def test_bsd_kernel_private_is_deliberately_absent(self):
         # Turning it on pulls sys/tty.h in through sys/systm.h, which needs the
         # generated build environment. If someone adds it, the check starts

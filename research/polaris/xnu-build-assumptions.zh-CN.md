@@ -118,6 +118,26 @@ ok    polaris_gpu_validate.c compiles against xnu-8796.141.3 headers (clean)
 桩头文件，CI 会用真头文件——这条只在真头上出现。修法是新增 `bsd/dev/polaris_gpu.h`
 放原型，`polaris_gpu.c` 包含它（0093 里一并加上）。
 
+### 顺带确认的符号面
+
+编出来的三个目标文件（aarch64 Mach-O）定义 7 个全局符号、没有重复定义；未定义的外部
+符号 9 个，逐个在树里找到了定义：
+
+| 符号 | 树里的定义 |
+|---|---|
+| `ml_io_map` | `osfmk/arm64/machine_routines.c`（原型在 `osfmk/arm/machine_routines.h`，逐字段一致） |
+| `SHA256_Init/Update/Final` | `libkern/crypto/corecrypto_sha2.c`，0023 已把它改成内置 LTC 实现 |
+| `PE_parse_boot_argn` | `pexpert/` |
+| `SecureDTLookupEntry` / `SecureDTGetProperty` | `pexpert/gen/device_tree.c` |
+| `polaris_touch_i2c_board` | `bsd/dev/polaris_touch_diag.c`（返回 `bool`，与我们的 extern 一致） |
+| `printf` / `memcpy` / `memset` / `bzero` | 内核自带 |
+
+这一层只证明"符号有定义"，不证明链接顺序与裁剪（`-dead_strip` / export 列表）。
+另外发现并修掉了工具的一个不忠实处：zig 的 clang **默认给每个目标文件插 UBSan**
+（`int f(int a){int b=a*4;return b;}` 就会导入 `__ubsan_handle_mul_overflow`），
+而内核按自己的 `UBSAN_CHECKS` 选择插桩；现在 `-fno-sanitize=all -fno-stack-protector`
+把它关掉，否则这些 handle 会把我们真正依赖的外部符号埋掉。
+
 ### 这个检查不覆盖什么
 
 - `-DBSD_KERNEL_PRIVATE`。`bsd/conf/Makefile.template` 对每个 bsd 源都加它，但它让
