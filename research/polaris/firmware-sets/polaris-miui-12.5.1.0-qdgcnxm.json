@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "name": "polaris-miui-12.5.1.0-qdgcnxm",
+  "files": [
+    {
+      "blob": "GPU-SQE",
+      "filename": "a630_sqe.fw",
+      "bytes": 31980,
+      "sha256": "34edacb6fdedfbfc07ed5cd1d29b0b57a3543ef5be6ab34a43bd64686826fa1e"
+    },
+    {
+      "blob": "GPU-GMU",
+      "filename": "a630_gmu.bin",
+      "bytes": 32768,
+      "sha256": "b07f90299ff2ae33948fcfd6ed67f53fbd287b5bf85ff2d43db11d4d32c1621f"
+    },
+    {
+      "blob": "GPU-ZAP-MDT",
+      "filename": "a630_zap.mdt",
+      "bytes": 6684,
+      "sha256": "1882b214d24c13eae4ffc39ba5456d5e61c80b089fb77e8b15f7bdd04bc9c831"
+    },
+    {
+      "blob": "GPU-ZAP-B00",
+      "filename": "a630_zap.b00",
+      "bytes": 148,
+      "sha256": "b2975f6a4c28a98197c1d694f6e275e71b23ec7e31e32ff5d1f83fdb80a94282"
+    },
+    {
+      "blob": "GPU-ZAP-B01",
+      "filename": "a630_zap.b01",
+      "bytes": 6536,
+      "sha256": "c94da0d6edf4820885b814ecda2f91c89b9d766126c3574c05d580c418815b5f"
+    },
+    {
+      "blob": "GPU-ZAP-B02",
+      "filename": "a630_zap.b02",
+      "bytes": 1968,
+      "sha256": "519b5538809f54ee566246b0520746a8ea82ca9384ea6bddb0b0e0d3c2de520c"
+    }
+  ],
+  "source": {
+    "archive": "polaris_images_V12.5.1.0.QDGCNXM_20210707.0000.00_10.0_cn.tgz",
+    "member": "images/vendor.img",
+    "path": "/firmware"
+  },
+  "note": "Official China MIUI 12.5.1 fastboot package for polaris. Extract with gpu-driver/tools/ext4_extract.py (sparse ext4, read-only, no mount). a630_zap.mdt embeds the SHA-256 of b00 (offset 188) and b02 (offset 252), so the four zap files are provably one signed bundle. a630_sqe.fw here is 31980 bytes (version 0x016ee187) while the handset this port was measured on reports 32136, hence the manifest pins the size instead of the 32136 baseline."
+}

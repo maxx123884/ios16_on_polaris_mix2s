@@ -1,0 +1,238 @@
+diff --git a/bsd/dev/polaris_gpu.c b/bsd/dev/polaris_gpu.c
+index 0b8bd63..18ea029 100644
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -65,15 +65,41 @@ static const char *const polaris_gpu_blob_name[PG_BLOB_COUNT] = {
+ };
+ 
+ /*
+- * Device-observed sizes with UNSET digests. As long as a digest here is zero,
+- * pg_expect_complete() refuses and the gate stops at the firmware stage: a
+- * handoff whose bytes were never hashed on this handset is not firmware we
+- * may start. Filling a digest is a separate, reviewable change that must come
+- * from the actual firmware files, never from an assumption.
++ * The A630 firmware set this gate expects, pinned by size and SHA-256.
++ *
++ * Source: official China MIUI 12.5.1 fastboot package for polaris
++ * (polaris_images_V12.5.1.0.QDGCNXM_20210707.0000.00_10.0_cn.tgz),
++ * images/vendor.img, /firmware/. Extracted read-only by
++ * gpu-driver/tools/ext4_extract.py; the manifest that names and proves the set
++ * is gpu-driver/upstream/research/polaris/firmware-sets/
++ * polaris-miui-12.5.1.0-qdgcnxm.json.
++ *
++ * a630_zap.mdt embeds the SHA-256 of b00 (offset 188) and b02 (offset 252), so
++ * those four files are provably one signed bundle rather than four lookalikes.
++ *
++ * Difference from the handset this port was measured on: its a630_sqe.fw is
++ * 32136 bytes, this set's is 31980 (version 0x016ee187), i.e. an earlier GPU
++ * microcode revision. The table therefore states 31980 and the manifest states
++ * why. Filling this table does NOT enable acceleration: this revision has no
++ * digest backend, so polaris_gpu_read_handoff() still submits zero digests and
++ * pg_validate_handoff() answers PG_EHASH_UNPROVEN. Regenerate with
++ *   python3 tools/polaris_gpu_expect_table.py --firmware DIR \
++ *       --manifest research/polaris/firmware-sets/<set>.json \
++ *       --apply bsd/dev/polaris_gpu.c
+  */
+ static const struct pg_expect polaris_gpu_expect[PG_BLOB_COUNT] = {
+-	{ 32136, { 0 } }, { 32768, { 0 } }, { 6684, { 0 } },
+-	{ 148, { 0 } }, { 6536, { 0 } }, { 1968, { 0 } }
++	/* GPU-SQE     a630_sqe.fw    */
++	{ 31980, { 0x34, 0xed, 0xac, 0xb6, 0xfd, 0xed, 0xfb, 0xfc, 0x07, 0xed, 0x5c, 0xd1, 0xd2, 0x9b, 0x0b, 0x57, 0xa3, 0x54, 0x3e, 0xf5, 0xbe, 0x6a, 0xb3, 0x4a, 0x43, 0xbd, 0x64, 0x68, 0x68, 0x26, 0xfa, 0x1e } },
++	/* GPU-GMU     a630_gmu.bin   */
++	{ 32768, { 0xb0, 0x7f, 0x90, 0x29, 0x9f, 0xf2, 0xae, 0x33, 0x94, 0x8f, 0xcf, 0xd6, 0xed, 0x67, 0xf5, 0x3f, 0xbd, 0x28, 0x7b, 0x5b, 0xf8, 0x5f, 0xf2, 0xd4, 0x3d, 0xb1, 0x1d, 0x4d, 0x32, 0xc1, 0x62, 0x1f } },
++	/* GPU-ZAP-MDT a630_zap.mdt   */
++	{ 6684, { 0x18, 0x82, 0xb2, 0x14, 0xd2, 0x4c, 0x13, 0xea, 0xe4, 0xff, 0xc3, 0x9b, 0xa5, 0x45, 0x6d, 0x5e, 0x61, 0xc8, 0x0b, 0x08, 0x9f, 0xb7, 0x7e, 0x8b, 0x15, 0xf7, 0xbd, 0xd0, 0x4b, 0xc9, 0xc8, 0x31 } },
++	/* GPU-ZAP-B00 a630_zap.b00   */
++	{ 148, { 0xb2, 0x97, 0x5f, 0x6a, 0x4c, 0x28, 0xa9, 0x81, 0x97, 0xc1, 0xd6, 0x94, 0xf6, 0xe2, 0x75, 0xe7, 0x1b, 0x23, 0xec, 0x7e, 0x31, 0xe3, 0x2f, 0xf5, 0xd1, 0xf8, 0x3f, 0xdb, 0x80, 0xa9, 0x42, 0x82 } },
++	/* GPU-ZAP-B01 a630_zap.b01   */
++	{ 6536, { 0xc9, 0x4d, 0xa0, 0xd6, 0xed, 0xf4, 0x82, 0x08, 0x85, 0xb8, 0x14, 0xec, 0xda, 0x2f, 0x91, 0xc8, 0x9b, 0x9d, 0x76, 0x61, 0x26, 0xc3, 0x57, 0x4c, 0x05, 0xd5, 0x80, 0xc4, 0x18, 0x81, 0x5b, 0x5f } },
++	/* GPU-ZAP-B02 a630_zap.b02   */
++	{ 1968, { 0x51, 0x9b, 0x55, 0x38, 0x80, 0x9f, 0x54, 0xee, 0x56, 0x62, 0x46, 0xb0, 0x52, 0x07, 0x46, 0xa8, 0xea, 0x82, 0xca, 0x93, 0x84, 0xea, 0x6b, 0xdd, 0xb0, 0xb0, 0xe0, 0xd3, 0xc2, 0xde, 0x52, 0x0c } }
+ };
+ 
+ /* ADT properties can be unaligned; copy rather than dereferencing as u64. */
+@@ -145,7 +171,11 @@ polaris_gpu_read_handoff(struct pg_handoff *handoff)
+ 		}
+ 		handoff->blob[i].pa = range.base;
+ 		handoff->blob[i].bytes = range.size;
+-		/* Digest stays zero: proving it needs the files, see above. */
++		/*
++		 * No digest backend exists in this revision, so the digest stays
++		 * zero and the validator answers PG_EHASH_UNPROVEN. Hashing here
++		 * is the next reviewable step, not something to fake.
++		 */
+ 	}
+ 	return PG_OK;
+ }
+diff --git a/bsd/dev/polaris_gpu_validate.c b/bsd/dev/polaris_gpu_validate.c
+index a0be11c..7a24edc 100644
+--- a/bsd/dev/polaris_gpu_validate.c
++++ b/bsd/dev/polaris_gpu_validate.c
+@@ -4,20 +4,6 @@
+  */
+ #include "polaris_gpu_validate.h"
+ 
+-/*
+- * Sizes observed on this handset's vendor firmware. Kept here as well as in
+- * tools/polaris_gpu_preflight.py on purpose: a firmware set neither tooling
+- * has seen is not "close enough".
+- */
+-static const uint64_t pg_device_bytes[PG_BLOB_COUNT] = {
+-	32136,	/* a630_sqe.fw   */
+-	32768,	/* a630_gmu.bin  */
+-	6684,	/* a630_zap.mdt  */
+-	148,	/* a630_zap.b00  */
+-	6536,	/* a630_zap.b01  */
+-	1968	/* a630_zap.b02  */
+-};
+-
+ static const char *const pg_status_text[] = {
+ 	"ok",
+ 	"invalid argument",
+@@ -115,7 +101,16 @@ pg_expect_complete(const struct pg_expect *expect, size_t count)
+ 		return false;
+ 	}
+ 	for (i = 0; i < count; ++i) {
+-		if (expect[i].bytes != pg_device_bytes[i]) {
++		/*
++		 * The table is the authority on which firmware set is expected; a
++		 * zero size is simply "not filled in yet". It is NOT compared
++		 * against pg_device_bytes[]: one official bundle (MIUI 12.5.1)
++		 * ships an earlier a630_sqe.fw than the handset this port was
++		 * measured on, and pinning that set by name is a reviewed change,
++		 * not a loosened check. pg_validate_handoff() still refuses any
++		 * size that differs from what the table states.
++		 */
++		if (expect[i].bytes == 0) {
+ 			return false;
+ 		}
+ 		if (pg_all_zero(expect[i].sha256, PG_HASH_BYTES)) {
+@@ -139,6 +134,13 @@ pg_validate_handoff(const struct pg_handoff *handoff,
+ 	if (!handoff->adt_polaris || !handoff->adt_sdm845) {
+ 		return PG_EBOARD;
+ 	}
++	/*
++	 * An incomplete table is "no expectation yet", so it must be reported
++	 * before any size comparison would blame the firmware for it.
++	 */
++	if (!pg_expect_complete(expect, PG_BLOB_COUNT)) {
++		return PG_EHASH_UNPROVEN;
++	}
+ 	if (!pg_has_end(&handoff->dram, &dram_end) ||
+ 	    (handoff->dram.base & (PG_PAGE - 1)) != 0 ||
+ 	    handoff->dram.size > PG_MAX_DRAM) {
+@@ -162,8 +164,13 @@ pg_validate_handoff(const struct pg_handoff *handoff,
+ 		const struct pg_blob *blob = &handoff->blob[i];
+ 		uint64_t reserve, blob_end;
+ 
+-		/* Size first: an unexpected firmware set is a hard refusal. */
+-		if (blob->bytes != pg_device_bytes[i]) {
++		/*
++		 * Size first: the pinned set is the only accepted firmware. This
++		 * used to compare against one handset's observed sizes; the table
++		 * now carries them, so a reviewed set with an earlier SQE revision
++		 * is expressible without ever widening the check.
++		 */
++		if (blob->bytes != expect[i].bytes) {
+ 			return PG_EBLOB_SIZE;
+ 		}
+ 		if ((blob->pa & (PG_PAGE - 1)) != 0) {
+@@ -192,11 +199,17 @@ pg_validate_handoff(const struct pg_handoff *handoff,
+ 		mapped += reserve;
+ 	}
+ 
+-	/* Layout alone never authorises firmware: the digests must be proven. */
+-	if (!pg_expect_complete(expect, PG_BLOB_COUNT)) {
+-		return PG_EHASH_UNPROVEN;
+-	}
++	/*
++	 * Layout alone never authorises firmware: the digests must be proven.
++	 * A zero digest in the handoff means these bytes were never hashed by
++	 * this kernel, which is "unproven", not "wrong" -- reporting a mismatch
++	 * there would point a debugger at the firmware instead of the missing
++	 * backend.
++	 */
+ 	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		if (pg_all_zero(handoff->blob[i].sha256, PG_HASH_BYTES)) {
++			return PG_EHASH_UNPROVEN;
++		}
+ 		if (!pg_same(handoff->blob[i].sha256, expect[i].sha256, PG_HASH_BYTES)) {
+ 			return PG_EHASH_MISMATCH;
+ 		}
+diff --git a/bsd/dev/polaris_gpu_validate.h b/bsd/dev/polaris_gpu_validate.h
+index abf3672..2b275ca 100644
+--- a/bsd/dev/polaris_gpu_validate.h
++++ b/bsd/dev/polaris_gpu_validate.h
+@@ -52,7 +52,7 @@ enum pg_status {
+ 	PG_EBLOB_OUTSIDE,	/* not fully inside XNU-managed DRAM */
+ 	PG_EBLOB_MISSING,	/* ADT has no memory-map entry for this blob */
+ 	PG_EBLOB_OVERLAP,	/* two blobs share a page */
+-	PG_EHASH_UNPROVEN,	/* expected table absent, wrong or zeroed */
++	PG_EHASH_UNPROVEN,	/* table not filled, or bytes never hashed */
+ 	PG_EHASH_MISMATCH	/* digest does not match the expectation */
+ };
+ 
+@@ -67,7 +67,10 @@ struct pg_blob {
+ 	uint8_t		sha256[PG_HASH_BYTES];	/* digest of that memory */
+ };
+ 
+-/* Sized and hashed from the six files on this handset; see the .c table. */
++/*
++ * One entry of the pinned firmware set: the size and digest the gate demands.
++ * The table in polaris_gpu.c is the authority; its header names the set.
++ */
+ struct pg_expect {
+ 	uint64_t	bytes;
+ 	uint8_t		sha256[PG_HASH_BYTES];
+diff --git a/tools/test_polaris_gpu_validate.c b/tools/test_polaris_gpu_validate.c
+index 203f0e6..2002058 100644
+--- a/tools/test_polaris_gpu_validate.c
++++ b/tools/test_polaris_gpu_validate.c
+@@ -172,12 +172,22 @@ main(void)
+ 	CHECK(!pg_expect_complete(expect, PG_BLOB_COUNT));
+ 	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_UNPROVEN);
+ 	fixture(&handoff, expect);
+-	expect[0].bytes = 32135;
++	expect[0].bytes = 0;
+ 	CHECK(!pg_expect_complete(expect, PG_BLOB_COUNT));
+ 	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_UNPROVEN);
+ 	CHECK(!pg_expect_complete(NULL, PG_BLOB_COUNT));
+ 	CHECK(!pg_expect_complete(expect, PG_BLOB_COUNT - 1));
+ 
++	/*
++	 * 9b. A filled table does not turn unhashed bytes into "wrong bytes".
++	 * This is the state of the driver in this revision, so the status it
++	 * prints must point at the missing digest backend, not at the firmware.
++	 */
++	fixture(&handoff, expect);
++	CHECK(pg_expect_complete(expect, PG_BLOB_COUNT));
++	memset(handoff.blob[1].sha256, 0, PG_HASH_BYTES);
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_UNPROVEN);
++
+ 	/* 10. A wrong digest is refused even when every range is perfect. */
+ 	fixture(&handoff, expect);
+ 	handoff.blob[3].sha256[7] ^= 0x01;
+@@ -191,7 +201,22 @@ main(void)
+ 	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
+ 	CHECK(result.blobs_ok == 99 && result.mapped_bytes == 99);
+ 
+-	/* 12. Every status has a name. */
++	/*
++	 * 12. A reviewed set whose SQE is an earlier revision than the one this
++	 * port was measured on is accepted by its own pinned size -- and only
++	 * that size. This is MIUI 12.5.1: 31980 bytes, not 32136.
++	 */
++	fixture(&handoff, expect);
++	handoff.blob[0].bytes = 31980;
++	expect[0].bytes = 31980;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_OK);
++	CHECK(result.blobs_ok == PG_BLOB_COUNT);
++	CHECK(result.mapped_bytes == 0x20000ull);
++	fixture(&handoff, expect);
++	handoff.blob[0].bytes = 31980;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_SIZE);
++
++	/* 13. Every status has a name. */
+ 	for (status = PG_OK; status <= PG_EHASH_MISMATCH; ++status) {
+ 		CHECK(pg_status_name(status) != NULL);
+ 	}

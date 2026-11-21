@@ -8,17 +8,30 @@ vendor files are available on the host:
 
   python3 tools/polaris_gpu_expect_table.py --firmware DIR
   python3 tools/polaris_gpu_expect_table.py --firmware DIR --apply bsd/dev/polaris_gpu.c
+  python3 tools/polaris_gpu_expect_table.py --firmware DIR --manifest SET.json --apply ...
 
 `--apply` rewrites only the digests inside the existing initializer, in place,
 then the diff can be reviewed like any other patch. Nothing here talks to the
 phone, and a file that is not one of the six known blobs is never accepted.
+
+`--manifest` selects a reviewed firmware *set* (see polaris_firmware_set.py).
+That is how an official bundle whose size differs from the one handset this
+port was measured on is pinned: the set states its own sizes and digests, and
+`--manifest` re-hashes every file against it, so a byte in the folder that is
+not the set is still refused.
 """
 import argparse
 import hashlib
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import polaris_firmware_set
+
 # Order matches enum pg_blob_id / the ADT memory-map names in polaris_gpu.c.
+# The sizes are the ones observed on the handset this port was measured on;
+# a different official set must be pinned through --manifest, never by editing
+# this tuple.
 FILES = (
     ('GPU-SQE', 'a630_sqe.fw', 32136),
     ('GPU-GMU', 'a630_gmu.bin', 32768),
@@ -39,9 +52,19 @@ def read_blobs(folder):
         if len(data) != expected:
             raise SystemExit(
                 f'{filename}: {len(data)} bytes, device-observed size is {expected}; '
-                'refusing to hash a firmware set this port has never seen')
+                'refusing to hash a firmware set this port has never seen '
+                '(pin a reviewed set with --manifest instead)')
         out.append((name, filename, data))
     return out
+
+
+def read_manifest_set(folder, manifest_path):
+    """Load a reviewed set and prove the folder still holds exactly those bytes."""
+    try:
+        manifest, entries = polaris_firmware_set.load(manifest_path)
+        return manifest, polaris_firmware_set.verify(folder, entries)
+    except polaris_firmware_set.FirmwareSetError as exc:
+        raise SystemExit(f'{manifest_path}: {exc}') from exc
 
 
 def c_table(blobs):
@@ -71,11 +94,18 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--firmware', type=Path, required=True,
                         help='directory holding the six Polaris GPU firmware files')
+    parser.add_argument('--manifest', type=Path,
+                        help='pin a reviewed firmware set (sizes and digests) instead '
+                             'of the single-handset sizes in this tool')
     parser.add_argument('--apply', type=Path,
                         help='rewrite the initializer in this C file in place')
     args = parser.parse_args()
 
-    blobs = read_blobs(args.firmware)
+    if args.manifest:
+        manifest, blobs = read_manifest_set(args.firmware, args.manifest)
+        print(f'firmware set: {manifest["name"]}', file=sys.stderr)
+    else:
+        blobs = read_blobs(args.firmware)
     table = c_table(blobs)
     if args.apply:
         source = args.apply.read_text(encoding='utf-8')

@@ -2,6 +2,7 @@
 """Tests for polaris_gpu_expect_table.py. Host-only, no firmware required."""
 import hashlib
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -82,6 +83,52 @@ class ExpectTable(unittest.TestCase):
             once = tool.replace_table(source, table)
             twice = tool.replace_table(once, table)
             self.assertEqual(once, twice)
+
+    def test_manifest_pins_its_own_size(self):
+        """An official set with a different SQE size is usable, by name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            write_set(folder, sizes={'a630_sqe.fw': 31980, 'a630_gmu.bin': 32768,
+                                     'a630_zap.mdt': 6684, 'a630_zap.b00': 148,
+                                     'a630_zap.b01': 6536, 'a630_zap.b02': 1968})
+            # The handset baseline refuses it...
+            with self.assertRaises(SystemExit) as caught:
+                tool.read_blobs(folder)
+            self.assertIn('31980', str(caught.exception))
+            # ...a reviewed manifest accepts exactly these bytes.
+            manifest, blobs = tool.read_manifest_set(folder, _pin(folder))
+            self.assertEqual(manifest['name'], 'unit-set')
+            table = tool.c_table(blobs)
+            self.assertIn('{ 31980,', table)
+            self.assertNotIn('{ 32136,', table)
+
+    def test_manifest_refuses_a_changed_byte(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            write_set(folder)
+            path = _pin(folder)
+            (folder / 'a630_zap.b02').write_bytes(b'\1' * 1968)
+            with self.assertRaises(SystemExit) as caught:
+                tool.read_manifest_set(folder, path)
+            self.assertIn('does not match the set', str(caught.exception))
+
+    def test_manifest_refuses_a_dangling_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            write_set(folder)
+            path = _pin(folder)
+            (folder / 'a630_gmu.bin').unlink()
+            with self.assertRaises(SystemExit):
+                tool.read_manifest_set(folder, path)
+
+
+def _pin(folder):
+    """Record FOLDER as a manifest under a temp path, as a reviewer would."""
+    import polaris_firmware_set
+    manifest = polaris_firmware_set.record(folder, 'unit-set')
+    path = folder / 'unit-set.json'
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    return path
 
 
 if __name__ == '__main__':

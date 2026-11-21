@@ -11,6 +11,7 @@ from pathlib import Path
 
 import adt
 import mkpayload
+import polaris_firmware_set
 from polaris_gmu_firmware import check_flat_a630_gmu
 
 PAGE = 0x4000
@@ -23,19 +24,31 @@ BLOBS = (
     ('GPU-ZAP-B01', 'a630_zap.b01'), ('GPU-ZAP-B02', 'a630_zap.b02'),
 )
 # Sizes observed from this phone; do not silently accept another firmware set.
+# An official bundle measured on a different handset must be pinned with
+# --manifest (tools/polaris_firmware_set.py), which also proves its digests.
 BLOB_SIZES = dict(zip((name for name, _ in BLOBS),
                       (32136, 32768, 6684, 148, 6536, 1968)))
 
 
-def check_firmware(folder):
+def check_firmware(folder, manifest=None):
+    sizes, digests = BLOB_SIZES, {}
+    if manifest is not None:
+        try:
+            _, entries = polaris_firmware_set.load(manifest)
+        except polaris_firmware_set.FirmwareSetError as exc:
+            raise ValueError(str(exc)) from exc
+        sizes = {entry['blob']: entry['bytes'] for entry in entries}
+        digests = {entry['blob']: entry['sha256'] for entry in entries}
     files = {}
     for name, filename in BLOBS:
         path = folder / filename
         if not path.is_file() or path.is_symlink():
             raise ValueError(f'missing or nonregular firmware: {filename}')
         data = path.read_bytes()
-        if len(data) != BLOB_SIZES[name]:
+        if len(data) != sizes[name]:
             raise ValueError(f'unexpected device firmware size: {filename}')
+        if name in digests and hashlib.sha256(data).hexdigest() != digests[name]:
+            raise ValueError(f'firmware does not match the pinned set: {filename}')
         files[name] = (path, data)
     check_flat_a630_gmu(files['GPU-GMU'][1])
     meta = files['GPU-ZAP-MDT'][1]
@@ -108,9 +121,12 @@ def main():
     parser.add_argument('kernel', type=Path)
     parser.add_argument('adt', type=Path)
     parser.add_argument('--cmdline', required=True)
+    parser.add_argument('--manifest', type=Path,
+                        help='pin a reviewed firmware set instead of the '
+                             'single-handset sizes this tool defaults to')
     args = parser.parse_args()
     try:
-        files = check_firmware(args.firmware_dir)
+        files = check_firmware(args.firmware_dir, args.manifest)
         used, remaining = check_layout(args.kernel, args.adt, args.cmdline, files)
     except (ValueError, OSError, AssertionError, StopIteration, struct.error) as exc:
         parser.error(str(exc))

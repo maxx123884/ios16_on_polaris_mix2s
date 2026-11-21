@@ -1,4 +1,5 @@
 """Host-only fail-closed tests for Polaris A630 firmware layout checks."""
+import json
 import struct
 import sys
 import tempfile
@@ -51,6 +52,29 @@ class PolarisGpuPreflightTests(unittest.TestCase):
         meta.unlink()
         with self.assertRaisesRegex(ValueError, 'missing or nonregular'):
             gpu.check_firmware(self.root)
+
+    def test_manifest_pins_a_different_sqe_size(self):
+        """A reviewed set overrides the single-handset size, and only that."""
+        import polaris_firmware_set
+        (self.root / 'a630_sqe.fw').write_bytes(bytes(31980))
+        manifest = polaris_firmware_set.record(self.root, 'small-sqe')
+        path = self.root / 'set.json'
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'unexpected device firmware size'):
+            gpu.check_firmware(self.root)
+        files = gpu.check_firmware(self.root, path)
+        self.assertEqual(len(files['GPU-SQE'][1]), 31980)
+        # The manifest pins bytes too: one flipped byte is still refused, even
+        # though the size is unchanged.
+        (self.root / 'a630_sqe.fw').write_bytes(bytes(31980)[:-1] + b'\x01')
+        with self.assertRaisesRegex(ValueError, 'does not match the pinned set'):
+            gpu.check_firmware(self.root, path)
+
+    def test_manifest_refuses_an_unreadable_set(self):
+        path = self.root / 'broken.json'
+        path.write_text('{"schema": 9}', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'unsupported manifest schema'):
+            gpu.check_firmware(self.root, path)
 
     def test_rejects_overlap_and_oversize_without_writing(self):
         files = gpu.check_firmware(self.root)
