@@ -118,25 +118,42 @@ ok    polaris_gpu_validate.c compiles against xnu-8796.141.3 headers (clean)
 桩头文件，CI 会用真头文件——这条只在真头上出现。修法是新增 `bsd/dev/polaris_gpu.h`
 放原型，`polaris_gpu.c` 包含它（0093 里一并加上）。
 
-### 顺带确认的符号面
+### 符号面（工具现在会查）
 
-编出来的三个目标文件（aarch64 Mach-O）定义 7 个全局符号、没有重复定义；未定义的外部
-符号 9 个，逐个在树里找到了定义：
+编完之后工具把三个目标文件的 Mach-O 符号表读回来，查两件在链接期才会暴露、但在对象里
+就能量出来的事：
+
+- **同一个全局符号被两个 TU 定义** → 链接必炸；
+- **我们调用、但整个树里没有定义** → 编译能过（声明是有的），链接才炸。
+
+实测：7 个全局符号、无重复；12 个外部符号全部在树里找到定义：
 
 | 符号 | 树里的定义 |
 |---|---|
 | `ml_io_map` | `osfmk/arm64/machine_routines.c`（原型在 `osfmk/arm/machine_routines.h`，逐字段一致） |
 | `SHA256_Init/Update/Final` | `libkern/crypto/corecrypto_sha2.c`，0023 已把它改成内置 LTC 实现 |
-| `PE_parse_boot_argn` | `pexpert/` |
+| `PE_parse_boot_argn` | `pexpert/gen/bootargs.c` |
 | `SecureDTLookupEntry` / `SecureDTGetProperty` | `pexpert/gen/device_tree.c` |
 | `polaris_touch_i2c_board` | `bsd/dev/polaris_touch_diag.c`（返回 `bool`，与我们的 extern 一致） |
-| `printf` / `memcpy` / `memset` / `bzero` | 内核自带 |
+| `printf` / `memcpy` / `memset` / `bzero` | 内核自带（`printf` 在 `osfmk/kern/printf.c`，另三个是 libkern 的实现） |
 
-这一层只证明"符号有定义"，不证明链接顺序与裁剪（`-dead_strip` / export 列表）。
-另外发现并修掉了工具的一个不忠实处：zig 的 clang **默认给每个目标文件插 UBSan**
+两个判据都是"精确"而不是"看起来像"，因为都踩过坑：
+
+- 判定义不能用 `git grep`——补丁新建的文件是未跟踪的，`git grep` 看不见，
+  `polaris_touch_i2c_board` 因此一开始被判成"不存在"。改为直接扫文件系统。
+- 判"这一行是定义"必须要求符号在列 0：`bsd/dev/mem.c:326` 是
+  `PE_parse_boot_argn("kmem", …)` 的续行，缩进之后和 K&R 定义长得一模一样。
+- 搜索范围排除 `SETUP/`、`tools/`、`tests/`：那里也有 `printf`/`memcpy`，但那是编译到
+  主机上的程序，把它们算作"内核里有定义"等于自欺。
+
+另外修掉了工具的一个不忠实处：zig 的 clang **默认给每个目标文件插 UBSan**
 （`int f(int a){int b=a*4;return b;}` 就会导入 `__ubsan_handle_mul_overflow`），
 而内核按自己的 `UBSAN_CHECKS` 选择插桩；现在 `-fno-sanitize=all -fno-stack-protector`
-把它关掉，否则这些 handle 会把我们真正依赖的外部符号埋掉。
+把它关掉，否则这些 handle 会把我们真正依赖的外部符号埋掉。同类的还有 zig 的输出缓存：
+第二次跑同样的输入它会直接复用产物、**不重放诊断**，于是"有警告"的文件第二次显示
+"clean"；现在每次给一个丢掉的 `ZIG_LOCAL_CACHE_DIR`，保证两次结果一样。
+
+这一层只证明"符号有定义"，不证明链接顺序与裁剪（`-dead_strip`、export 列表）。
 
 ### 这个检查不覆盖什么
 

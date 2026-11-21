@@ -16,10 +16,12 @@ and the warning flags - on this box:
     15) does not are listed in TOOLCHAIN_GAP and switched off, so they cannot
     hide a real diagnostic behind a wall of noise from XNU's headers.
 
-What this does NOT prove: the linker, the board config headers that only a
-full `make` generates, and any file whose include chain differs from the three
-we check. A green run here means "CI will get past the parser on these three
-files", not "the kernel links".
+What this does NOT prove: the linker itself, the board config headers that only
+a full `make` generates, and any file whose include chain differs from the three
+we check. It does go one step past the parser: the objects are read back for
+their symbol tables, so a symbol defined twice, or called but defined nowhere in
+the tree, fails here. A green run means "CI will get past the parser and the
+symbols exist", not "the kernel links".
 
 Usage:
   python3 tools/polaris_kernel_syntax.py --tree ../build/xnu-141
@@ -30,7 +32,9 @@ No device is touched.
 """
 import argparse
 import os
+import re
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -113,6 +117,23 @@ SHIM_DIR = Path(__file__).resolve().parent / 'kernel-headers'
 # almost all of them include generated headers such as sys/sysproto.h.
 CONTROL_SOURCES = (SHIM_DIR / 'baseline.c',)
 
+# --------------------------------------------------------------- symbol phase
+# After compiling, each object's Mach-O symbol table is read back. Two things
+# there are exact, so they are checked rather than reported:
+#   * one global defined by two of our translation units is a link error;
+#   * an external we call that nothing in the tree defines is a link error too
+#     (the C compiler cannot see it: it is declared, just not there).
+MH_MAGIC_64 = 0xfeedfacf
+LC_SYMTAB = 0x2
+N_STAB, N_TYPE, N_EXT, N_UNDF = 0xe0, 0x0e, 0x01, 0x00
+
+# Where a kernel symbol can live. SETUP/, tools/ and tests/ are host programs
+# that also define printf and memcpy, so including them would make any external
+# "resolve" against something the kernel never links.
+TREE_SYMBOL_DIRS = ('bsd', 'osfmk', 'pexpert', 'libkern', 'iokit', 'security',
+                    'libsa')
+SYMBOL_SUFFIXES = ('.c', '.cpp', '.s', '.h')
+
 # Deliberately NOT passed: -DBSD_KERNEL_PRIVATE. bsd/conf/Makefile.template
 # sets it for every bsd/ source, but it makes sys/systm.h pull in sys/tty.h and
 # the rest of the kernel-private surface, which only resolves with -include
@@ -130,6 +151,96 @@ MACHINE_DIRS = ('osfmk/arm', 'osfmk/arm64')
 
 class CheckError(RuntimeError):
     pass
+
+
+def macho_symbols(path):
+    """Return (defined, undefined) among the object's external symbols.
+
+    Mach-O mangles a leading underscore onto every C name; it is stripped here
+    so the result matches what the source calls the symbol. N_STAB entries are
+    debugger symbols and are skipped, and so are locals: only globals are
+    interesting for a link.
+    """
+    blob = path.read_bytes()
+    magic, _cpu, _sub, _filetype, ncmds = struct.unpack_from('<IiiII', blob)
+    if magic != MH_MAGIC_64:
+        raise CheckError(f'{path.name}: not a 64-bit Mach-O object (0x{magic:08x})')
+    defined, undefined = [], []
+    offset = 32
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from('<II', blob, offset)
+        if cmd == LC_SYMTAB:
+            symoff, nsyms, stroff, _strsize = struct.unpack_from('<IIII', blob,
+                                                                 offset + 8)
+            for i in range(nsyms):
+                strx, ntype, _sect, _desc, _value = struct.unpack_from(
+                    '<IBBHQ', blob, symoff + i * 16)
+                if ntype & N_STAB or not ntype & N_EXT:
+                    continue
+                start = stroff + strx
+                end = blob.index(b'\0', start)
+                name = blob[start:end].decode('utf-8', 'replace').lstrip('_')
+                if ntype & N_TYPE == N_UNDF:
+                    undefined.append(name)
+                else:
+                    defined.append(name)
+        offset += cmdsize
+        if offset >= len(blob):
+            break
+    return defined, undefined
+
+
+def looks_like_definition(line, symbol):
+    """True when a source line defines `symbol` rather than calling it.
+
+    XNU writes definitions kernel style - return type on the line before, the
+    name at column 0 - so a leading tab is enough to rule a line out. A call
+    that continues on the next line looks exactly like a definition otherwise
+    (`\t    PE_parse_boot_argn("kmem", ...)` in bsd/dev/mem.c fooled the first
+    version of this check).
+    """
+    if line.startswith(f'{symbol}('):
+        return not line.rstrip().endswith(';')
+    if not line.startswith(' '):
+        head = line.split('(', 1)[0].split()
+        return (len(head) >= 2 and head[-1] == symbol and
+                not line.rstrip().endswith(';'))
+    return False
+
+
+def resolve_externals(tree, wanted, skip):
+    """Find a definition or #define for each name in `wanted`.
+
+    One pass over the kernel's own sources: reading 7k files once is cheaper
+    than one grep per symbol, and it sees the files the patch series created,
+    which are untracked and therefore invisible to `git grep`.
+    """
+    names = sorted(set(wanted))
+    if not names:
+        return {}
+    alt = '|'.join(re.escape(n) for n in names)
+    macro = re.compile(rf'#\s*define\s+({alt})\b')
+    found = {}
+    for top in TREE_SYMBOL_DIRS:
+        for path in (tree / top).rglob('*'):
+            if path.suffix not in SYMBOL_SUFFIXES or not path.is_file():
+                continue
+            if path.name in skip:
+                continue
+            try:
+                text = path.read_text(encoding='utf-8', errors='replace')
+            except OSError:
+                continue
+            for line in text.splitlines():
+                for name in names:
+                    if name in found or name not in line:
+                        continue
+                    if looks_like_definition(line, name) or \
+                            macro.search(line):
+                        found[name] = path.relative_to(tree).as_posix()
+            if len(found) == len(names):
+                return found
+    return found
 
 
 def support_dir(work, tree):
@@ -210,6 +321,39 @@ def apply_patches(tree):
     return applied, skipped
 
 
+def check_symbols(tree, work):
+    """Link-level facts from the objects just compiled.
+
+    Returns a dict with either an 'error' (nothing to read) or the lists main
+    prints: 'defined', 'externals', 'duplicates', 'missing'.
+    """
+    defs, undef, absent = {}, set(), []
+    for name in SOURCES:
+        obj = work / (name[:-2] + '.o')
+        if not obj.is_file():
+            absent.append(obj.name)
+            continue
+        defined, undefined = macho_symbols(obj)
+        for sym in defined:
+            defs.setdefault(sym, []).append(obj.name)
+        undef.update(undefined)
+    if absent:
+        return {'error': 'missing objects: ' + ', '.join(absent)}
+    if not defs:
+        # A parser that silently reads nothing would pass every check below.
+        return {'error': 'symbol tables look empty; the Mach-O parser is broken'}
+    ours = set(defs)
+    externals = sorted(undef - ours)
+    duplicates = {s: o for s, o in defs.items() if len(o) > 1}
+    missing = []
+    if externals:
+        skip = set(SOURCES) | {'polaris_gpu.h'}
+        resolved = resolve_externals(tree, externals, skip)
+        missing = [s for s in externals if s not in resolved]
+    return {'defined': sorted(defs), 'externals': externals,
+            'duplicates': duplicates, 'missing': missing}
+
+
 def parse_diagnostics(output):
     """Split compiler output into errors and warnings (paths kept verbatim)."""
     errors, warnings = [], []
@@ -219,6 +363,22 @@ def parse_diagnostics(output):
         elif ': warning:' in line or line.startswith('warning:'):
             warnings.append(line)
     return errors, warnings
+
+
+def compile_env(work):
+    """Environment for one run: a cache that is thrown away first.
+
+    zig keeps the artefacts of a successful compile and, on a rerun with the
+    same inputs, replays the object without re-emitting its diagnostics - a
+    second run then called a file with a real warning "clean". A fresh
+    ZIG_LOCAL_CACHE_DIR per run costs about a second per file and makes the
+    report the same however many times it is run.
+    """
+    cache = work / 'zigcache'
+    shutil.rmtree(cache, ignore_errors=True)
+    env = dict(os.environ)
+    env['ZIG_LOCAL_CACHE_DIR'] = str(cache)
+    return env
 
 
 def run_check(tree, work):
@@ -231,10 +391,11 @@ def run_check(tree, work):
     work.mkdir(parents=True, exist_ok=True)
     support_dir(work, tree)
     flags = compile_flags(work, tree)
+    env = compile_env(work)
     control = {}
     for src in CONTROL_SOURCES:
         run = subprocess.run(cc + flags + ['-o', str(work / 'control.o'), str(src)],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=env)
         errors, warnings = parse_diagnostics(run.stdout + run.stderr)
         control[str(src)] = (errors, warnings, run.returncode)
         if errors or run.returncode != 0:
@@ -245,7 +406,7 @@ def run_check(tree, work):
         src = tree / 'bsd' / 'dev' / name
         obj = work / (name[:-2] + '.o')
         run = subprocess.run(cc + flags + ['-o', str(obj), str(src)],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=env)
         # zig reports a cache rename failure when it cannot place the object;
         # an explicit -o (above) keeps that out of the way, and the exit code
         # is reported separately so a tool quirk cannot look like a code error.
@@ -312,6 +473,27 @@ def main(argv=None):
             print(f'ok    {name} compiles against {XNU_TAG} headers ({note})')
         for line in warnings[:3]:
             print(f'      warning: {line}')
+
+    symbols = check_symbols(tree, work) if not failed else {'error': 'skipped'}
+    if 'error' in symbols:
+        if symbols['error'] != 'skipped':
+            failed = True
+            print(f'FAIL  symbols: {symbols["error"]}')
+    else:
+        if symbols['duplicates']:
+            failed = True
+            for sym, objs in symbols['duplicates'].items():
+                print(f'FAIL  {sym} is defined in {", ".join(objs)}')
+        if symbols['missing']:
+            failed = True
+            for sym in symbols['missing']:
+                print(f'FAIL  {sym} is called but nothing under '
+                      f'{"/".join(TREE_SYMBOL_DIRS)} defines it')
+        if not symbols['duplicates'] and not symbols['missing']:
+            print(f'ok    symbols: {len(symbols["defined"])} globals, no '
+                  f'duplicates; {len(symbols["externals"])} externals all '
+                  'defined in the tree')
+            print(f'      externals: {", ".join(symbols["externals"])}')
 
     if failed:
         print('\nFAILED - this is what CI would report, without the push')

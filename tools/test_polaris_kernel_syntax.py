@@ -7,6 +7,7 @@ is every file our patches add under bsd/dev, the control file really includes
 what our sources include, and compiler output is read the way a human reads it.
 """
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -104,6 +105,117 @@ class Control(unittest.TestCase):
 
 def text_lines(path):
     return [line.strip() for line in Path(path).read_text().splitlines()]
+
+
+def write_macho(path, symbols):
+    """A minimal 64-bit Mach-O with one LC_SYMTAB and the given nlist entries.
+
+    symbols: [(name, n_type)] where n_type is N_EXT|N_SECT for a definition and
+    N_EXT|N_UNDF for an external. Enough for a symbol-table reader, which is all
+    the tool looks at.
+    """
+    names = b'\0'
+    entries = []
+    for name, ntype in symbols:
+        entries.append((len(names), ntype))
+        names += name.encode() + b'\0'
+    cmd_size = 24
+    symoff = 32 + cmd_size
+    stroff = symoff + 16 * len(entries)
+    blob = struct.pack('<IiiIIIII', 0xfeedfacf, 0x0100000c, 0, 1, 1,
+                       cmd_size, 0, 0)
+    blob += struct.pack('<IIIIII', 2, cmd_size, symoff, len(entries),
+                        stroff, len(names))
+    for strx, ntype in entries:
+        blob += struct.pack('<IBBHQ', strx, ntype, 0, 0, 0)
+    path.write_bytes(blob + names)
+
+
+class MachO(unittest.TestCase):
+    def test_defined_and_undefined_are_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj = Path(tmp) / 'x.o'
+            write_macho(obj, [('_our_entry', 0x0f), ('_ml_io_map', 0x01)])
+            defined, undefined = ks.macho_symbols(obj)
+            self.assertEqual(defined, ['our_entry'])
+            self.assertEqual(undefined, ['ml_io_map'])
+
+    def test_a_local_symbol_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj = Path(tmp) / 'x.o'
+            # N_SECT without N_EXT: a static function, invisible to the link.
+            write_macho(obj, [('_local_helper', 0x0e), ('_global', 0x0f)])
+            defined, undefined = ks.macho_symbols(obj)
+            self.assertEqual(defined, ['global'])
+            self.assertEqual(undefined, [])
+
+    def test_an_elf_object_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj = Path(tmp) / 'x.o'
+            obj.write_bytes(b'\x7fELF' + b'\0' * 60)
+            with self.assertRaises(ks.CheckError):
+                ks.macho_symbols(obj)
+
+
+class Definitions(unittest.TestCase):
+    def test_kernel_style_definition(self):
+        # Return type on the previous line, name at column 0.
+        self.assertTrue(ks.looks_like_definition('polaris_touch_i2c_board(void)',
+                                                 'polaris_touch_i2c_board'))
+        self.assertTrue(ks.looks_like_definition('ml_io_map(', 'ml_io_map'))
+        self.assertTrue(ks.looks_like_definition('static int foo(void) {',
+                                                 'foo'))
+
+    def test_a_wrapped_call_is_not_a_definition(self):
+        # bsd/dev/mem.c:326 wraps a call and fooled the first version.
+        line = '\t    PE_parse_boot_argn("kmem", &kmem, sizeof(kmem))) {'
+        self.assertFalse(ks.looks_like_definition(line, 'PE_parse_boot_argn'))
+
+    def test_a_call_statement_is_not_a_definition(self):
+        self.assertFalse(ks.looks_like_definition('polaris_gpu_init();',
+                                                  'polaris_gpu_init'))
+
+    def test_resolution_finds_definitions_and_macros(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / 'bsd' / 'dev').mkdir(parents=True)
+            (tree / 'bsd' / 'dev' / 'thing.c').write_text(
+                'int\n'
+                'thing_open(\n'
+                '\tint flags)\n')
+            (tree / 'osfmk' / 'kern').mkdir(parents=True)
+            (tree / 'osfmk' / 'kern' / 'shim.h').write_text(
+                '#define bzero(p, n) memset((p), 0, (n))\n')
+            found = ks.resolve_externals(tree, ['thing_open', 'bzero'], set())
+            self.assertEqual(found.get('thing_open'), 'bsd/dev/thing.c')
+            self.assertEqual(found.get('bzero'), 'osfmk/kern/shim.h')
+
+    def test_resolution_does_not_use_host_tools(self):
+        # SETUP/ and tools/ define printf and memcpy for the *host*; a hit
+        # there would silently "prove" a kernel symbol that is not there.
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / 'SETUP' / 'config').mkdir(parents=True)
+            (tree / 'SETUP' / 'config' / 'tool.c').write_text(
+                'int\nprintf(const char *fmt)\n')
+            self.assertEqual(ks.resolve_externals(tree, ['printf'], set()), {})
+
+    def test_resolution_skips_our_own_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / 'bsd' / 'dev').mkdir(parents=True)
+            (tree / 'bsd' / 'dev' / 'polaris_gpu.c').write_text(
+                'int\npg_validate_layout(void)\n')
+            got = ks.resolve_externals(tree, ['pg_validate_layout'],
+                                       {'polaris_gpu.c'})
+            self.assertEqual(got, {})
+
+
+class Symbols(unittest.TestCase):
+    def test_no_objects_is_an_error_not_a_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = ks.check_symbols(Path(tmp), Path(tmp))
+            self.assertIn('error', got)
 
 
 class Diagnostics(unittest.TestCase):

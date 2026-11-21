@@ -256,7 +256,7 @@ fi
 if [ -n "$XNU_TREE" ]; then
 	if "$PY" "$ROOT/tools/polaris_kernel_syntax.py" --tree "$XNU_TREE" \
 		>"$ROOT/../build/preflight-syntax.log" 2>&1; then
-		ok "polaris_gpu*.c compile against $(basename "$XNU_TREE") headers"
+		ok "polaris_gpu*.c compile and resolve their symbols against $(basename "$XNU_TREE")"
 	else
 		bad "polaris_gpu*.c do not compile against the real headers:"
 		grep -E 'error:|FAIL' "$ROOT/../build/preflight-syntax.log" | head -6 |
