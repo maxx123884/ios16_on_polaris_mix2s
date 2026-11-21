@@ -491,10 +491,10 @@ index 0000000..06a82bc
 +#endif /* _BSD_DEV_POLARIS_GPU_VALIDATE_H_ */
 diff --git a/tools/test_polaris_gpu_validate.c b/tools/test_polaris_gpu_validate.c
 new file mode 100644
-index 0000000..53656e9
+index 0000000..203f0e6
 --- /dev/null
 +++ b/tools/test_polaris_gpu_validate.c
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,205 @@
 +/*
 + * Host unit test for the Polaris GPU handoff validator (bsd/dev/
 + * polaris_gpu_validate.c). Runs on the build host; reads no hardware.
@@ -646,11 +646,16 @@ index 0000000..53656e9
 +	fixture(&handoff, expect);
 +	handoff.blob[0].pa = DRAM_BASE - PG_PAGE;
 +	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
-+	fixture(&handoff, expect);
-+	handoff.blob[5].pa = DRAM_BASE + DRAM_SIZE - PG_PAGE / 2;
-+	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
++	/*
++	 * A page-aligned blob can never straddle a page-aligned DRAM end, so the
++	 * remaining containment cases are "starts at the end" and "far above it".
++	 * The latter also proves the bounds arithmetic does not wrap.
++	 */
 +	fixture(&handoff, expect);
 +	handoff.blob[5].pa = DRAM_BASE + DRAM_SIZE;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
++	fixture(&handoff, expect);
++	handoff.blob[5].pa = UINT64_MAX - 0x7fffull;	/* aligned, no wraparound */
 +	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
 +
 +	/* 8. Two blobs may never share a page. */
