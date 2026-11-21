@@ -1,0 +1,697 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index ce85053..979e96f 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -3,4 +3,5 @@ bsd/dev/polaris_touch_diag.c		standard
+ bsd/dev/polaris_touch_i2c.c		standard
+ bsd/dev/polaris_gpu_diag.c		standard
+ bsd/dev/polaris_gpu.c			standard
++bsd/dev/polaris_gpu_validate.c		standard
+ bsd/dev/mem.c				standard
+diff --git a/bsd/dev/polaris_gpu.c b/bsd/dev/polaris_gpu.c
+index 00757eb..8947c47 100644
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -7,6 +7,8 @@
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include "polaris_gpu_validate.h"
+ 
+ extern bool polaris_touch_i2c_board(void);
+ 
+@@ -46,6 +48,108 @@ static const char *const polaris_gpu_stage_name[POLARIS_GPU_STAGE_COUNT] = {
+ 	"HFI", "SMMU", "PAS13", "CP", "fence"
+ };
+ 
++/*
++ * Reserved regions this driver must never map: the PAS13 zap carveout is 8 KiB
++ * of no-map memory behind a secure loader, and 0x9d400000 is ABL's splash
++ * framebuffer. Both values are this handset's, not generic SDM845 constants.
++ */
++#define POLARIS_GPU_ZAP_BASE	0x8c415000ull
++#define POLARIS_GPU_ZAP_BYTES	0x2000ull
++#define POLARIS_GPU_FB_BASE	0x9d400000ull
++#define POLARIS_GPU_FB_BYTES	0x2400000ull
++
++/* Names mkpayload.py must have placed in /chosen/memory-map, in blob order. */
++static const char *const polaris_gpu_blob_name[PG_BLOB_COUNT] = {
++	"GPU-SQE", "GPU-GMU", "GPU-ZAP-MDT",
++	"GPU-ZAP-B00", "GPU-ZAP-B01", "GPU-ZAP-B02"
++};
++
++/*
++ * Device-observed sizes with UNSET digests. As long as a digest here is zero,
++ * pg_expect_complete() refuses and the gate stops at the firmware stage: a
++ * handoff whose bytes were never hashed on this handset is not firmware we
++ * may start. Filling a digest is a separate, reviewable change that must come
++ * from the actual firmware files, never from an assumption.
++ */
++static const struct pg_expect polaris_gpu_expect[PG_BLOB_COUNT] = {
++	{ 32136, { 0 } }, { 32768, { 0 } }, { 6684, { 0 } },
++	{ 148, { 0 } }, { 6536, { 0 } }, { 1968, { 0 } }
++};
++
++/* ADT properties can be unaligned; copy rather than dereferencing as u64. */
++static bool
++polaris_gpu_adt_u64(DTEntry node, const char *key, uint64_t *value)
++{
++	const void *data = NULL;
++	unsigned int length = 0;
++
++	if (SecureDTGetProperty(node, key, &data, &length) != kSuccess ||
++	    data == NULL || length != sizeof(*value)) {
++		return false;
++	}
++	memcpy(value, data, sizeof(*value));
++	return true;
++}
++
++static bool
++polaris_gpu_adt_pair(DTEntry node, const char *key, struct pg_range *range)
++{
++	const void *data = NULL;
++	unsigned int length = 0;
++
++	if (SecureDTGetProperty(node, key, &data, &length) != kSuccess ||
++	    data == NULL || length != 16) {
++		return false;
++	}
++	memcpy(&range->base, data, sizeof(range->base));
++	memcpy(&range->size, (const uint8_t *)data + sizeof(range->base),
++	    sizeof(range->size));
++	return true;
++}
++
++/*
++ * Describe the boot handoff for validation. Read-only: no MMIO, no votes.
++ * A missing memory-map entry is reported, never defaulted to "close enough".
++ */
++static enum pg_status
++polaris_gpu_read_handoff(struct pg_handoff *handoff)
++{
++	DTEntry chosen, mmap;
++	unsigned int i;
++
++	memset(handoff, 0, sizeof(*handoff));
++	/* polaris_touch_i2c_board() already required both exact ADT identities. */
++	handoff->adt_polaris = true;
++	handoff->adt_sdm845 = true;
++	handoff->zap.base = POLARIS_GPU_ZAP_BASE;
++	handoff->zap.size = POLARIS_GPU_ZAP_BYTES;
++	handoff->splash.base = POLARIS_GPU_FB_BASE;
++	handoff->splash.size = POLARIS_GPU_FB_BYTES;
++
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    !polaris_gpu_adt_u64(chosen, "dram-base", &handoff->dram.base) ||
++	    !polaris_gpu_adt_u64(chosen, "dram-size", &handoff->dram.size)) {
++		return PG_EDRAM;
++	}
++	if (SecureDTLookupEntry(NULL, "/chosen/memory-map", &mmap) != kSuccess) {
++		printf("POLARIS GPU: no memory-map in ADT\n");
++		return PG_EBLOB_MISSING;
++	}
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		struct pg_range range;
++
++		if (!polaris_gpu_adt_pair(mmap, polaris_gpu_blob_name[i], &range)) {
++			printf("POLARIS GPU: ADT has no %s entry\n",
++			    polaris_gpu_blob_name[i]);
++			return PG_EBLOB_MISSING;
++		}
++		handoff->blob[i].pa = range.base;
++		handoff->blob[i].bytes = range.size;
++		/* Digest stays zero: proving it needs the files, see above. */
++	}
++	return PG_OK;
++}
++
+ /*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+@@ -96,6 +200,10 @@ void
+ polaris_gpu_init(void)
+ {
+ 	int optin = 0;
++	enum pg_status status;
++	struct pg_validate_result result;
++	struct pg_handoff handoff;
++
+ 	if (!polaris_touch_i2c_board()) {
+ 		return;
+ 	}
+@@ -107,6 +215,22 @@ polaris_gpu_init(void)
+ 	if (!polaris_gpu_enter(&polaris_gpu, POLARIS_GPU_BOARD)) {
+ 		goto fail;
+ 	}
++	/*
++	 * Reproduce, from the live ADT, exactly the layout the host preflight
++	 * checked offline. Anything unexpected stops here, before a rail or a
++	 * register is touched.
++	 */
++	status = polaris_gpu_read_handoff(&handoff);
++	if (status == PG_OK) {
++		status = pg_validate_handoff(&handoff, polaris_gpu_expect, &result);
++	}
++	if (status != PG_OK) {
++		printf("POLARIS GPU: handoff rejected: %s; no GPU access\n",
++		    pg_status_name(status));
++		goto fail;
++	}
++	printf("POLARIS GPU: handoff accepted, %u blobs, %llu bytes in plan\n",
++	    result.blobs_ok, (unsigned long long)result.mapped_bytes);
+ 	if (!polaris_gpu_enter(&polaris_gpu, POLARIS_GPU_FIRMWARE)) {
+ 		goto fail;
+ 	}
+diff --git a/bsd/dev/polaris_gpu_validate.c b/bsd/dev/polaris_gpu_validate.c
+new file mode 100644
+index 0000000..a0be11c
+--- /dev/null
++++ b/bsd/dev/polaris_gpu_validate.c
+@@ -0,0 +1,208 @@
++/*
++ * Pure, no-MMIO validation of the Polaris GPU handoff. NOT a GPU driver.
++ * See polaris_gpu_validate.h for the contract. No MMIO, no SCM, no firmware.
++ */
++#include "polaris_gpu_validate.h"
++
++/*
++ * Sizes observed on this handset's vendor firmware. Kept here as well as in
++ * tools/polaris_gpu_preflight.py on purpose: a firmware set neither tooling
++ * has seen is not "close enough".
++ */
++static const uint64_t pg_device_bytes[PG_BLOB_COUNT] = {
++	32136,	/* a630_sqe.fw   */
++	32768,	/* a630_gmu.bin  */
++	6684,	/* a630_zap.mdt  */
++	148,	/* a630_zap.b00  */
++	6536,	/* a630_zap.b01  */
++	1968	/* a630_zap.b02  */
++};
++
++static const char *const pg_status_text[] = {
++	"ok",
++	"invalid argument",
++	"not the expected Polaris board",
++	"implausible XNU-managed DRAM range",
++	"reserved range conflict",
++	"firmware size mismatch",
++	"firmware not page aligned",
++	"firmware outside managed DRAM",
++	"firmware blob missing from ADT",
++	"overlapping firmware allocations",
++	"firmware hashes unproven",
++	"firmware hash mismatch"
++};
++
++const char *
++pg_status_name(enum pg_status status)
++{
++	if ((unsigned int)status >= sizeof(pg_status_text) / sizeof(pg_status_text[0])) {
++		return "unknown status";
++	}
++	return pg_status_text[status];
++}
++
++/* A range is usable only when non-empty and base+size cannot wrap. */
++static bool
++pg_has_end(const struct pg_range *range, uint64_t *end)
++{
++	if (range == NULL || range->size == 0) {
++		return false;
++	}
++	if (range->base > UINT64_MAX - range->size) {
++		return false;
++	}
++	*end = range->base + range->size;
++	return true;
++}
++
++/* Page-round a non-empty length without wrapping or producing zero. */
++static bool
++pg_round_up(uint64_t bytes, uint64_t *out)
++{
++	uint64_t rounded;
++
++	if (bytes == 0 || bytes > UINT64_MAX - (PG_PAGE - 1)) {
++		return false;
++	}
++	rounded = (bytes + (PG_PAGE - 1)) & ~(PG_PAGE - 1);
++	if (rounded == 0) {
++		return false;
++	}
++	*out = rounded;
++	return true;
++}
++
++/* Ends are precomputed and overflow-checked by the caller. */
++static bool
++pg_overlap(uint64_t abase, uint64_t aend, uint64_t bbase, uint64_t bend)
++{
++	return abase < bend && bbase < aend;
++}
++
++static bool
++pg_all_zero(const uint8_t *bytes, size_t count)
++{
++	size_t i;
++
++	for (i = 0; i < count; ++i) {
++		if (bytes[i] != 0) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++pg_same(const uint8_t *a, const uint8_t *b, size_t count)
++{
++	size_t i;
++
++	for (i = 0; i < count; ++i) {
++		if (a[i] != b[i]) {
++			return false;
++		}
++	}
++	return true;
++}
++
++bool
++pg_expect_complete(const struct pg_expect *expect, size_t count)
++{
++	size_t i;
++
++	if (expect == NULL || count != PG_BLOB_COUNT) {
++		return false;
++	}
++	for (i = 0; i < count; ++i) {
++		if (expect[i].bytes != pg_device_bytes[i]) {
++			return false;
++		}
++		if (pg_all_zero(expect[i].sha256, PG_HASH_BYTES)) {
++			return false;
++		}
++	}
++	return true;
++}
++
++enum pg_status
++pg_validate_handoff(const struct pg_handoff *handoff,
++    const struct pg_expect *expect, struct pg_validate_result *result)
++{
++	uint64_t dram_end, zap_end, splash_end, mapped = 0;
++	uint64_t start[PG_BLOB_COUNT], end[PG_BLOB_COUNT];
++	uint32_t i, j;
++
++	if (handoff == NULL || expect == NULL || result == NULL) {
++		return PG_EINVAL;
++	}
++	if (!handoff->adt_polaris || !handoff->adt_sdm845) {
++		return PG_EBOARD;
++	}
++	if (!pg_has_end(&handoff->dram, &dram_end) ||
++	    (handoff->dram.base & (PG_PAGE - 1)) != 0 ||
++	    handoff->dram.size > PG_MAX_DRAM) {
++		return PG_EDRAM;
++	}
++	/*
++	 * The PAS13 carveout and the ABL splash buffer are not ours to map.
++	 * They must be outside XNU-managed RAM and must not overlap each other.
++	 */
++	if (!pg_has_end(&handoff->zap, &zap_end) ||
++	    !pg_has_end(&handoff->splash, &splash_end)) {
++		return PG_EDRAM;
++	}
++	if (pg_overlap(handoff->dram.base, dram_end, handoff->zap.base, zap_end) ||
++	    pg_overlap(handoff->dram.base, dram_end, handoff->splash.base, splash_end) ||
++	    pg_overlap(handoff->zap.base, zap_end, handoff->splash.base, splash_end)) {
++		return PG_ERESERVED;
++	}
++
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		const struct pg_blob *blob = &handoff->blob[i];
++		uint64_t reserve, blob_end;
++
++		/* Size first: an unexpected firmware set is a hard refusal. */
++		if (blob->bytes != pg_device_bytes[i]) {
++			return PG_EBLOB_SIZE;
++		}
++		if ((blob->pa & (PG_PAGE - 1)) != 0) {
++			return PG_EBLOB_ALIGN;
++		}
++		if (!pg_round_up(blob->bytes, &reserve)) {
++			return PG_EBLOB_SIZE;
++		}
++		/* Order matters: reject pa >= dram_end before subtracting. */
++		if (blob->pa < handoff->dram.base || blob->pa >= dram_end ||
++		    reserve > dram_end - blob->pa) {
++			return PG_EBLOB_OUTSIDE;
++		}
++		blob_end = blob->pa + reserve;
++		if (pg_overlap(blob->pa, blob_end, handoff->zap.base, zap_end) ||
++		    pg_overlap(blob->pa, blob_end, handoff->splash.base, splash_end)) {
++			return PG_ERESERVED;
++		}
++		for (j = 0; j < i; ++j) {
++			if (pg_overlap(blob->pa, blob_end, start[j], end[j])) {
++				return PG_EBLOB_OVERLAP;
++			}
++		}
++		start[i] = blob->pa;
++		end[i] = blob_end;
++		mapped += reserve;
++	}
++
++	/* Layout alone never authorises firmware: the digests must be proven. */
++	if (!pg_expect_complete(expect, PG_BLOB_COUNT)) {
++		return PG_EHASH_UNPROVEN;
++	}
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		if (!pg_same(handoff->blob[i].sha256, expect[i].sha256, PG_HASH_BYTES)) {
++			return PG_EHASH_MISMATCH;
++		}
++	}
++
++	result->blobs_ok = PG_BLOB_COUNT;
++	result->mapped_bytes = mapped;
++	return PG_OK;
++}
+diff --git a/bsd/dev/polaris_gpu_validate.h b/bsd/dev/polaris_gpu_validate.h
+new file mode 100644
+index 0000000..06a82bc
+--- /dev/null
++++ b/bsd/dev/polaris_gpu_validate.h
+@@ -0,0 +1,105 @@
++/*
++ * Pure, no-MMIO validation of the Polaris GPU handoff. NOT a GPU driver.
++ *
++ * This header and its .c depend only on <stdint.h>, <stdbool.h>, <stddef.h>
++ * so the same source compiles inside XNU (bsd/dev) and as a host unit test
++ * (tools/test_polaris_gpu_validate.c). Nothing here reads a register, votes
++ * a rail, maps memory, touches SCM or starts firmware; every decision is a
++ * function of the caller-supplied description of the boot handoff.
++ *
++ * The point of this layer is that a bad ADT layout, a short firmware file, an
++ * unaligned or overlapping allocation, or an unproven firmware hash is
++ * rejected BEFORE any hardware-writing backend exists. Keep the CPU
++ * framebuffer and the 0090 touch path on every rejection.
++ */
++#ifndef _BSD_DEV_POLARIS_GPU_VALIDATE_H_
++#define _BSD_DEV_POLARIS_GPU_VALIDATE_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <stddef.h>
++
++/* The six blobs mkpayload.py must place for a GPU-capable boot payload. */
++#define PG_BLOB_COUNT	6u
++#define PG_HASH_BYTES	32u
++/* XNU on this port uses 16 KiB pages; MKADT/mkpayload align to the same. */
++#define PG_PAGE		0x4000ull
++/* XNU manages one upper DDR bank here (~3.9 GiB). Refuse absurd claims. */
++#define PG_MAX_DRAM	(16ull * 1024ull * 1024ull * 1024ull)
++
++enum pg_blob_id {
++	PG_BLOB_SQE = 0,	/* a630_sqe.fw    */
++	PG_BLOB_GMU,		/* a630_gmu.bin   */
++	PG_BLOB_ZAP_MDT,	/* a630_zap.mdt   */
++	PG_BLOB_ZAP_B00,	/* a630_zap.b00   */
++	PG_BLOB_ZAP_B01,	/* a630_zap.b01   */
++	PG_BLOB_ZAP_B02		/* a630_zap.b02   */
++};
++
++enum pg_status {
++	PG_OK = 0,
++	PG_EINVAL,		/* NULL argument */
++	PG_EBOARD,		/* not the expected dual-ADT Polaris board */
++	PG_EDRAM,		/* XNU-managed DRAM range is not plausible */
++	PG_ERESERVED,		/* reserved range overlaps or is straddled */
++	PG_EBLOB_SIZE,		/* size differs from the device-observed size */
++	PG_EBLOB_ALIGN,		/* not PG_PAGE aligned */
++	PG_EBLOB_OUTSIDE,	/* not fully inside XNU-managed DRAM */
++	PG_EBLOB_MISSING,	/* ADT has no memory-map entry for this blob */
++	PG_EBLOB_OVERLAP,	/* two blobs share a page */
++	PG_EHASH_UNPROVEN,	/* expected table absent, wrong or zeroed */
++	PG_EHASH_MISMATCH	/* digest does not match the expectation */
++};
++
++struct pg_range {
++	uint64_t	base;
++	uint64_t	size;
++};
++
++struct pg_blob {
++	uint64_t	pa;			/* ADT memory-map address */
++	uint64_t	bytes;			/* ADT memory-map length */
++	uint8_t		sha256[PG_HASH_BYTES];	/* digest of that memory */
++};
++
++/* Sized and hashed from the six files on this handset; see the .c table. */
++struct pg_expect {
++	uint64_t	bytes;
++	uint8_t		sha256[PG_HASH_BYTES];
++};
++
++struct pg_handoff {
++	bool			adt_polaris;
++	bool			adt_sdm845;
++	struct pg_range		dram;		/* /chosen dram-base, dram-size */
++	struct pg_range		zap;		/* PAS13 a630_zap carveout */
++	struct pg_range		splash;		/* ABL splash framebuffer */
++	struct pg_blob		blob[PG_BLOB_COUNT];
++};
++
++struct pg_validate_result {
++	uint32_t	blobs_ok;	/* blobs accepted; 6 on PG_OK */
++	uint64_t	mapped_bytes;	/* page-rounded sum of blob bytes */
++};
++
++/* Name for a status, for printf-style diagnostics. Never NULL. */
++const char *
++pg_status_name(enum pg_status status);
++
++/*
++ * True when EXPECT carries the device-observed size for every blob and a
++ * non-zero digest for each. A partially filled table is never "good enough":
++ * unproven is treated as failure everywhere else in this contract.
++ */
++bool
++pg_expect_complete(const struct pg_expect *expect, size_t count);
++
++/*
++ * Validate the handoff. Pure function: the inputs are never written, and
++ * RESULT is only written on PG_OK.
++ */
++enum pg_status
++pg_validate_handoff(const struct pg_handoff *handoff,
++    const struct pg_expect *expect, struct pg_validate_result *result);
++
++#endif /* _BSD_DEV_POLARIS_GPU_VALIDATE_H_ */
+diff --git a/tools/test_polaris_gpu_validate.c b/tools/test_polaris_gpu_validate.c
+new file mode 100644
+index 0000000..53656e9
+--- /dev/null
++++ b/tools/test_polaris_gpu_validate.c
+@@ -0,0 +1,200 @@
++/*
++ * Host unit test for the Polaris GPU handoff validator (bsd/dev/
++ * polaris_gpu_validate.c). Runs on the build host; reads no hardware.
++ *
++ *   cc -std=c99 -Wall -Wextra -I../bsd/dev test_polaris_gpu_validate.c \
++ *      ../bsd/dev/polaris_gpu_validate.c -o test_polaris_gpu_validate
++ *   ./test_polaris_gpu_validate
++ *
++ * Every case asserts a refusal path that must exist BEFORE any backend is
++ * allowed to vote a rail, map SMMU memory or start firmware.
++ */
++#include <stdio.h>
++#include <string.h>
++
++#include "../bsd/dev/polaris_gpu_validate.h"
++
++static unsigned int failures;
++
++#define CHECK(cond) do {						\
++	if (!(cond)) {							\
++		printf("FAIL %d: %s\n", __LINE__, #cond);		\
++		failures++;						\
++	}								\
++} while (0)
++
++#define EXPECT_STATUS(expr, want) do {					\
++	enum pg_status got_ = (expr);					\
++	if (got_ != (want)) {						\
++		printf("FAIL %d: %s -> %s, want %s\n", __LINE__, #expr,	\
++		    pg_status_name(got_), pg_status_name(want));	\
++		failures++;						\
++	}								\
++} while (0)
++
++/*
++ * Layout mirrors the real handoff: XNU manages the upper DDR bank at
++ * 0x100000000, the zap carveout and ABL splash sit outside it, and the six
++ * firmware blobs are packed page-aligned from +1 MiB.
++ */
++#define DRAM_BASE	0x100000000ull
++#define DRAM_SIZE	0x7cc00000ull
++#define ZAP_BASE	0x8c415000ull
++#define ZAP_SIZE	0x2000ull
++#define FB_BASE		0x9d400000ull
++#define FB_SIZE		0x2400000ull
++#define BLOB_ORIGIN	(DRAM_BASE + 0x100000ull)
++
++static const uint64_t device_bytes[PG_BLOB_COUNT] = {
++	32136, 32768, 6684, 148, 6536, 1968
++};
++
++static void
++fixture(struct pg_handoff *handoff, struct pg_expect *expect)
++{
++	uint64_t at = BLOB_ORIGIN;
++	unsigned int i, j;
++
++	memset(handoff, 0, sizeof(*handoff));
++	memset(expect, 0, sizeof(struct pg_expect) * PG_BLOB_COUNT);
++	handoff->adt_polaris = true;
++	handoff->adt_sdm845 = true;
++	handoff->dram.base = DRAM_BASE;
++	handoff->dram.size = DRAM_SIZE;
++	handoff->zap.base = ZAP_BASE;
++	handoff->zap.size = ZAP_SIZE;
++	handoff->splash.base = FB_BASE;
++	handoff->splash.size = FB_SIZE;
++	for (i = 0; i < PG_BLOB_COUNT; ++i) {
++		uint64_t reserve = (device_bytes[i] + PG_PAGE - 1) &
++		    ~(PG_PAGE - 1);
++		handoff->blob[i].pa = at;
++		handoff->blob[i].bytes = device_bytes[i];
++		expect[i].bytes = device_bytes[i];
++		for (j = 0; j < PG_HASH_BYTES; ++j) {
++			/* Deterministic per-blob digest, not all zero. */
++			handoff->blob[i].sha256[j] = (uint8_t)(i * 37 + j + 1);
++			expect[i].sha256[j] = handoff->blob[i].sha256[j];
++		}
++		at += reserve;
++	}
++}
++
++int
++main(void)
++{
++	struct pg_handoff handoff;
++	struct pg_expect expect[PG_BLOB_COUNT];
++	struct pg_validate_result result;
++	enum pg_status status;
++
++	/* 1. The valid handoff is accepted and reports the page-rounded plan. */
++	fixture(&handoff, expect);
++	memset(&result, 0, sizeof(result));
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_OK);
++	CHECK(result.blobs_ok == PG_BLOB_COUNT);
++	CHECK(result.mapped_bytes == 0x20000ull);
++
++	/* 2. Absent arguments never default to success. */
++	EXPECT_STATUS(pg_validate_handoff(NULL, expect, &result), PG_EINVAL);
++	EXPECT_STATUS(pg_validate_handoff(&handoff, NULL, &result), PG_EINVAL);
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, NULL), PG_EINVAL);
++
++	/* 3. Both ADT identities are required. */
++	fixture(&handoff, expect);
++	handoff.adt_polaris = false;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBOARD);
++	fixture(&handoff, expect);
++	handoff.adt_sdm845 = false;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBOARD);
++
++	/* 4. Implausible managed DRAM. */
++	fixture(&handoff, expect);
++	handoff.dram.size = 0;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
++	fixture(&handoff, expect);
++	handoff.dram.base = UINT64_MAX - 8;
++	handoff.dram.size = 16;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
++	fixture(&handoff, expect);
++	handoff.dram.base = DRAM_BASE + 1;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
++	fixture(&handoff, expect);
++	handoff.dram.size = PG_MAX_DRAM + PG_PAGE;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
++
++	/* 5. Reserved memory must be described and must stay out of DRAM. */
++	fixture(&handoff, expect);
++	handoff.zap.size = 0;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
++	fixture(&handoff, expect);
++	handoff.zap.base = DRAM_BASE + 0x200000;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_ERESERVED);
++	fixture(&handoff, expect);
++	handoff.splash.base = DRAM_BASE + DRAM_SIZE - FB_SIZE;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_ERESERVED);
++
++	/* 6. A blob that is not the device-observed size is refused. */
++	fixture(&handoff, expect);
++	handoff.blob[1].bytes = 32767;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_SIZE);
++	fixture(&handoff, expect);
++	handoff.blob[4].bytes = 0;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_SIZE);
++
++	/* 7. Alignment and containment. */
++	fixture(&handoff, expect);
++	handoff.blob[2].pa += 1;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_ALIGN);
++	fixture(&handoff, expect);
++	handoff.blob[0].pa = DRAM_BASE - PG_PAGE;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
++	fixture(&handoff, expect);
++	handoff.blob[5].pa = DRAM_BASE + DRAM_SIZE - PG_PAGE / 2;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
++	fixture(&handoff, expect);
++	handoff.blob[5].pa = DRAM_BASE + DRAM_SIZE;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OUTSIDE);
++
++	/* 8. Two blobs may never share a page. */
++	fixture(&handoff, expect);
++	handoff.blob[3].pa = handoff.blob[2].pa;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EBLOB_OVERLAP);
++
++	/* 9. Unproven digests are a refusal, not a warning. */
++	fixture(&handoff, expect);
++	memset(expect[2].sha256, 0, PG_HASH_BYTES);
++	CHECK(!pg_expect_complete(expect, PG_BLOB_COUNT));
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_UNPROVEN);
++	fixture(&handoff, expect);
++	expect[0].bytes = 32135;
++	CHECK(!pg_expect_complete(expect, PG_BLOB_COUNT));
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_UNPROVEN);
++	CHECK(!pg_expect_complete(NULL, PG_BLOB_COUNT));
++	CHECK(!pg_expect_complete(expect, PG_BLOB_COUNT - 1));
++
++	/* 10. A wrong digest is refused even when every range is perfect. */
++	fixture(&handoff, expect);
++	handoff.blob[3].sha256[7] ^= 0x01;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EHASH_MISMATCH);
++
++	/* 11. The result struct is only written on success. */
++	fixture(&handoff, expect);
++	result.blobs_ok = 99;
++	result.mapped_bytes = 99;
++	handoff.dram.size = 0;
++	EXPECT_STATUS(pg_validate_handoff(&handoff, expect, &result), PG_EDRAM);
++	CHECK(result.blobs_ok == 99 && result.mapped_bytes == 99);
++
++	/* 12. Every status has a name. */
++	for (status = PG_OK; status <= PG_EHASH_MISMATCH; ++status) {
++		CHECK(pg_status_name(status) != NULL);
++	}
++
++	if (failures != 0) {
++		printf("%u check(s) failed\n", failures);
++		return 1;
++	}
++	printf("all handoff validation cases passed\n");
++	return 0;
++}
