@@ -9,7 +9,7 @@ index ce85053..979e96f 100644
 +bsd/dev/polaris_gpu_validate.c		standard
  bsd/dev/mem.c				standard
 diff --git a/bsd/dev/polaris_gpu.c b/bsd/dev/polaris_gpu.c
-index 00757eb..8947c47 100644
+index 72974fc..0b8bd63 100644
 --- a/bsd/dev/polaris_gpu.c
 +++ b/bsd/dev/polaris_gpu.c
 @@ -7,6 +7,8 @@
