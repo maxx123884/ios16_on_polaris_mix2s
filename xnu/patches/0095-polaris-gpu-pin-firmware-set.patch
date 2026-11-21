@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/polaris_gpu.c b/bsd/dev/polaris_gpu.c
-index 0b8bd63..18ea029 100644
+index 0b8bd63..c7bd944 100644
 --- a/bsd/dev/polaris_gpu.c
 +++ b/bsd/dev/polaris_gpu.c
 @@ -65,15 +65,41 @@ static const char *const polaris_gpu_blob_name[PG_BLOB_COUNT] = {
@@ -15,9 +15,9 @@ index 0b8bd63..18ea029 100644
 + *
 + * Source: official China MIUI 12.5.1 fastboot package for polaris
 + * (polaris_images_V12.5.1.0.QDGCNXM_20210707.0000.00_10.0_cn.tgz),
-+ * images/vendor.img, /firmware/. Extracted read-only by
-+ * gpu-driver/tools/ext4_extract.py; the manifest that names and proves the set
-+ * is gpu-driver/upstream/research/polaris/firmware-sets/
++ * images/vendor.img, /firmware/. Extracted read-only by the port's
++ * tools/ext4_extract.py; the manifest that names and proves the set lives in
++ * the port repository at research/polaris/firmware-sets/
 + * polaris-miui-12.5.1.0-qdgcnxm.json.
 + *
 + * a630_zap.mdt embeds the SHA-256 of b00 (offset 188) and b02 (offset 252), so
