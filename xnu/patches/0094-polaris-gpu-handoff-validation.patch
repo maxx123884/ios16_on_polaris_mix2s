@@ -380,10 +380,10 @@ index 0000000..a0be11c
 +}
 diff --git a/bsd/dev/polaris_gpu_validate.h b/bsd/dev/polaris_gpu_validate.h
 new file mode 100644
-index 0000000..06a82bc
+index 0000000..abf3672
 --- /dev/null
 +++ b/bsd/dev/polaris_gpu_validate.h
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,110 @@
 +/*
 + * Pure, no-MMIO validation of the Polaris GPU handoff. NOT a GPU driver.
 + *
@@ -410,7 +410,12 @@ index 0000000..06a82bc
 +#define PG_HASH_BYTES	32u
 +/* XNU on this port uses 16 KiB pages; MKADT/mkpayload align to the same. */
 +#define PG_PAGE		0x4000ull
-+/* XNU manages one upper DDR bank here (~3.9 GiB). Refuse absurd claims. */
++/*
++ * XNU manages the single upper DDR bank described by the mirrored ADT.
++ * Observed on the 0090 payload: dram-base 0x100000000, dram-size 0x7cc00000
++ * (1.95 GiB, i.e. a 6 GiB machine). An 8 GiB board would describe a larger
++ * bank, so the ceiling is set well above either and only rejects nonsense.
++ */
 +#define PG_MAX_DRAM	(16ull * 1024ull * 1024ull * 1024ull)
 +
 +enum pg_blob_id {
