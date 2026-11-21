@@ -15,7 +15,7 @@ python3 -m unittest tools/test_polaris_gpu_expect_table.py \
 	tools/test_polaris_arc_db.py tools/test_polaris_bcm_db.py \
 	tools/test_polaris_bw_levels.py tools/test_polaris_gpu_stages.py \
 	tools/test_polaris_rscc_pdc.py tools/test_polaris_zap_check.py \
-	tools/test_polaris_firmware_set.py -q
+	tools/test_polaris_firmware_set.py tools/test_polaris_payload_blobs.py -q
 
 echo "== c: polaris_gpu_validate"
 # Use CC when set, else the first working system compiler, else the pip zig
