@@ -94,8 +94,8 @@ done
 | 0094 的 `polaris_gpu.c` 上下文 | 与 0093 产出的文件逐字节一致（3,381 B，`4ff48a9a…`） |
 | 我们三个补丁里唯一的上游文件 | 只有 `bsd/conf/files`；其余文件都由 0093/0094 自己创建 |
 | 补丁命名与 glob | 96 个 `.patch` 编号唯一；`*.sh` 有 3 个（工作流 `cp ... *.sh` 不会因空 glob 失败） |
-| 主机测试 | 130 项 Python + 51 条 C 断言 + gate 7 场景 + 哈希 harness 全过 |
-| 三个源文件对真头文件编译 | `-Weverything -Werror` 下 0 error（见 [编译假设](<xnu-build-assumptions.zh-CN.md>) §7） |
+| 主机测试 | 141 项 Python + 51 条 C 断言 + gate 7 场景 + 哈希 harness 全过 |
+| 三个源文件对真头文件编译 | `-Weverything -Werror` 下 0 error，符号表也读回查过（见 [编译假设](<xnu-build-assumptions.zh-CN.md>) §7） |
 
 `bsd/conf/files` 的 hunk 是在本地一份 6 行的合成副本上生成的（`@@ -3,4`），
 行号与真实文件（596 行）不符；`git apply` 靠上下文定位，实测能落到真实位置

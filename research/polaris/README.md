@@ -15,7 +15,7 @@ This repository began as an iOS 16/XNU port to Redmi Note 10 Pro (`sweet`, SM715
 | Display | Bootloader-inherited framebuffer and CPU composition remain the working fallback. | GPU composition or an independently initialized panel. |
 | GPU | Device recovery Linux identified Adreno630v2 and 257–710 MHz; six firmware components were extracted **locally and kept out of Git**. An opt-in, read-only XNU firmware-metadata diagnostic compiled/linked in [CI run 39739222780](https://github.com/luuu20309/ios-sweet/actions/runs/39739222780). Host-only parsers and tests cover firmware, ARC/BCM metadata, v2 bandwidth cases and a bring-up ownership model. | **No XNU GPU power-on, GMU/HFI execution, PAS13, GPU SMMU mappings, CP fence, GPU drawing, or accelerated iOS display.** That CI run is compile evidence, not GPU execution. |
 
-**No working GPU accelerator or ready-to-boot GPU-enabled image exists in this repo.** Nothing in these research tools should be mistaken for a driver that can render or boot the GPU. The most recent GPU changes are host-side and have not been kernel-built or phone-tested. No Metal implementation is claimed.
+**No working GPU accelerator or ready-to-boot GPU-enabled image exists in this repo.** Nothing in these research tools should be mistaken for a driver that can render or boot the GPU. The most recent GPU changes have not been through a CI kernel build or a phone test; their three sources do compile against the pinned `xnu-8796.141.3` headers under `-Weverything -Werror`, and their symbol tables resolve (see [build assumptions](<xnu-build-assumptions.zh-CN.md>)). No Metal implementation is claimed.
 
 ### Device bring-up timeline
 
@@ -76,7 +76,7 @@ The repository does not ship a Polaris-flashing recipe. Confirm the exact phone 
 | 显示 | CPU 合成并复制到 bootloader 遗留 framebuffer；这是当前默认回退路径。 | GPU 合成或独立初始化屏幕。 |
 | GPU | Recovery Linux 报告 Adreno630v2 和 257–710 MHz；本机只读提取六个固件组件并置于 Git 忽略目录。可选的只读 XNU 固件元数据诊断在 [CI 39739222780](https://github.com/luuu20309/ios-sweet/actions/runs/39739222780) **编译和链接通过**；主机脚本检查固件、ARC/BCM 格式及 v2 档位。 | **未在 XNU 上给 GPU 供电、运行 GMU/HFI、执行 PAS13、建立 GPU SMMU 映射、提交 CP fence 或 GPU 渲染。** CI 不是 GPU 真机运行证据。 |
 
-**本仓库当前没有可用的 Polaris GPU 加速驱动，也没有现成可启动 GPU 加速的镜像。** 当前图形仍由 CPU 完成；研究脚本不是硬件驱动。最新 GPU 主机工具未经过新的 XNU 编译或手机启动。没有 Metal 实现。
+**本仓库当前没有可用的 Polaris GPU 加速驱动，也没有现成可启动 GPU 加速的镜像。** 当前图形仍由 CPU 完成；研究脚本不是硬件驱动。最新的 GPU 改动尚未经过 CI 的整颗内核构建，也未在手机上启动；其中三个源文件已对钉住的 `xnu-8796.141.3` 头文件在 `-Weverything -Werror` 下编过、符号表也能解析（见[编译假设](<xnu-build-assumptions.zh-CN.md>)）。没有 Metal 实现。
 
 ### 已完成的关键工作
 
@@ -103,12 +103,13 @@ MiCode [GPU 设备树](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/blob/p
 | [`tools/polaris_gpu_preflight.py`](<../../tools/polaris_gpu_preflight.py>)、[`polaris_gmu_firmware.py`](<../../tools/polaris_gmu_firmware.py>) | 本机固件、内存布局与 GMU 平铺格式检查。 |
 | [`tools/polaris_arc_db.py`](<../../tools/polaris_arc_db.py>)、[`polaris_bcm_db.py`](<../../tools/polaris_bcm_db.py>) | 解析明确提供的离线 command-db 字节，不读取设备物理内存。 |
 | [`tools/polaris_bw_levels.py`](<../../tools/polaris_bw_levels.py>)、[`polaris_gpu_stages.py`](<../../tools/polaris_gpu_stages.py>) | v2 带宽索引和资源归属阶段模型，仅供主机验证。 |
+| [`tools/polaris_kernel_syntax.py`](<../../tools/polaris_kernel_syntax.py>)、[`kernel-headers/`](<../../tools/kernel-headers/>) | 用真树 `xnu-8796.141.3` 的头文件编`bsd/dev/polaris_gpu*.c`（内核自己的 `-Weverything -Werror`），并读回目标文件的符号表；不启动、也不访问任何设备。 |
 | [研究资料](<./>)、[详细交接](<../../NOTES.md>) | 源码依据、真机证据、限制及下一步。 |
 
 ```sh
 python -m unittest tools/test_polaris_gpu_preflight.py tools/test_polaris_gmu_firmware.py tools/test_polaris_arc_db.py tools/test_polaris_bcm_db.py tools/test_polaris_bw_levels.py tools/test_polaris_gpu_stages.py -v
 ```
 
-截至 2026-10-22，**26 项主机测试通过**。单元测试不需要专有固件；本机固件也曾通过独立预检，但未上传。后续要先取得受信任的 command-db／bus query 数据或单独验证主线简化模式，再实现可回退的 Polaris 电源、时钟、GMU/HFI、PAS13 与 SMMU 后端；先用经用户同意的临时 `fastboot boot` 验证有界 CP fence 和实际缓冲区变化，最后才接 Mesa／EAGL、IOSurface 与屏幕呈现。**完整编译通过不等于 GPU 加速成功。**
+截至 2026-10-22，**26 项主机测试通过**；截至 2026-11-22 为 **141 项**（含真头文件与符号检查）。单元测试不需要专有固件；本机固件也曾通过独立预检，但未上传。后续要先取得受信任的 command-db／bus query 数据或单独验证主线简化模式，再实现可回退的 Polaris 电源、时钟、GMU/HFI、PAS13 与 SMMU 后端；先用经用户同意的临时 `fastboot boot` 验证有界 CP fence 和实际缓冲区变化，最后才接 Mesa／EAGL、IOSurface 与屏幕呈现。**完整编译通过不等于 GPU 加速成功。**
 
 不要把设备转储、序列号、分区备份、Apple 镜像、Qualcomm 专有固件或构建产物传到公开 GitHub。仓库不提供 Polaris 刷机捷径；任何新测试镜像启动前确认设备与镜像，写分区前另征得明确同意，保留 bootloader、recovery、modem、persist 和备份。
