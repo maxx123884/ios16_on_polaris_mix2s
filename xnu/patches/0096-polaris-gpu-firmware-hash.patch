@@ -72,10 +72,10 @@ index c7bd944..73199c2 100644
  	}
 diff --git a/bsd/dev/polaris_gpu_hash.c b/bsd/dev/polaris_gpu_hash.c
 new file mode 100644
-index 0000000..44bbdd5
+index 0000000..d33eb86
 --- /dev/null
 +++ b/bsd/dev/polaris_gpu_hash.c
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,122 @@
 +/*
 + * Polaris A630 firmware hashing -- see polaris_gpu_hash.h for the contract.
 + *
@@ -98,6 +98,12 @@ index 0000000..44bbdd5
 +
 +#include <sys/param.h>
 +#include <sys/systm.h>
++/*
++ * vm_offset_t/vm_size_t live here; sys/param.h does not promise them
++ * transitively, and the ml_io_map prototype below needs the exact types.
++ * Apple's IOPCIFamily declares the same prototype for its own MMIO maps.
++ */
++#include <mach/vm_types.h>
 +#include <libkern/crypto/sha2.h>
 +
 +#include "polaris_gpu_hash.h"
@@ -354,10 +360,10 @@ index 2b275ca..a6b3ccd 100644
  pg_validate_handoff(const struct pg_handoff *handoff,
 diff --git a/tools/hosthash/harness.c b/tools/hosthash/harness.c
 new file mode 100644
-index 0000000..72d47a3
+index 0000000..103f790
 --- /dev/null
 +++ b/tools/hosthash/harness.c
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,193 @@
 +/*
 + * Host harness for bsd/dev/polaris_gpu_hash.c.
 + *
@@ -376,6 +382,7 @@ index 0000000..72d47a3
 +#include <string.h>
 +
 +#include <sys/param.h>
++#include <mach/vm_types.h>
 +#include <libkern/crypto/sha2.h>
 +
 +#include "polaris_gpu_hash.h"
@@ -566,9 +573,24 @@ index 0000000..9981497
 +void SHA256_Update(SHA256_CTX *, const void *, size_t);
 +void SHA256_Final(void *, SHA256_CTX *);
 +#endif
+diff --git a/tools/hosthash/stub/mach/vm_types.h b/tools/hosthash/stub/mach/vm_types.h
+new file mode 100644
+index 0000000..de5f60b
+--- /dev/null
++++ b/tools/hosthash/stub/mach/vm_types.h
+@@ -0,0 +1,9 @@
++#ifndef _STUB_MACH_VM_TYPES_H_
++#define _STUB_MACH_VM_TYPES_H_
++#include <stdint.h>
++#include <stddef.h>
++
++/* The two types bsd/dev/polaris_gpu_hash.c needs for its ml_io_map prototype. */
++typedef uintptr_t vm_offset_t;
++typedef uintptr_t vm_size_t;
++#endif
 diff --git a/tools/hosthash/stub/sys/param.h b/tools/hosthash/stub/sys/param.h
 new file mode 100644
-index 0000000..eaaf6d0
+index 0000000..89be708
 --- /dev/null
 +++ b/tools/hosthash/stub/sys/param.h
 @@ -0,0 +1,8 @@
@@ -577,8 +599,8 @@ index 0000000..eaaf6d0
 +#include <stdint.h>
 +#include <stddef.h>
 +#include <string.h>
-+typedef uintptr_t vm_offset_t;
-+typedef uintptr_t vm_size_t;
++
++/* vm_offset_t/vm_size_t belong to <mach/vm_types.h> (stubbed separately). */
 +#endif
 diff --git a/tools/hosthash/stub/sys/systm.h b/tools/hosthash/stub/sys/systm.h
 new file mode 100644
