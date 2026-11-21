@@ -13,7 +13,8 @@ echo "== python: handoff tooling + existing GPU host tests"
 python3 -m unittest tools/test_polaris_gpu_expect_table.py \
 	tools/test_polaris_gpu_preflight.py tools/test_polaris_gmu_firmware.py \
 	tools/test_polaris_arc_db.py tools/test_polaris_bcm_db.py \
-	tools/test_polaris_bw_levels.py tools/test_polaris_gpu_stages.py -q
+	tools/test_polaris_bw_levels.py tools/test_polaris_gpu_stages.py \
+	tools/test_polaris_rscc_pdc.py -q
 
 echo "== c: polaris_gpu_validate"
 CC=${CC:-}
