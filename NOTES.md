@@ -99,6 +99,16 @@ access. Two side findings: the USB netconsole did not enumerate (`SWEET USB: ep0
 and the root did not mount (`setuidGoldMask: Error 16 opening /dev/ufsroot0`, `hfs: remount of data volume (apfs)
 is in state of change`), i.e. current userdata has no HFS+ root this kernel can mount - unrelated to the image.
 
+**Patch 0097 (read-only GX probe) was then written.** +112 lines in `bsd/dev/polaris_gpu.c`, no new
+file: a `polarisgxprobe=1` boot-arg (default off) that maps the GMU and PDC windows and reads the nine
+words from `m0a-gx-readonly-probe.zh-CN.md` section 2, one at a time, printing each as it lands - if the
+domain is unclocked and a read aborts, the console ring still holds the values that arrived, which is
+exactly the open question ("is reading GMU CSR with GX off legal"). It runs only after the digests matched
+and the gate still refuses afterwards, so it adds observation without adding capability. Verified locally:
+applies cleanly to the 0096 output and the file it produces is byte-identical to the tree, compiles under
+`-Weverything -Werror` against the real headers (13 externals, `ml_io_unmap` now among them), and
+`validate-repo` accepts 0001-0097 as contiguous.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

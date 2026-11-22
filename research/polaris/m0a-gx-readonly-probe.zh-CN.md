@@ -178,3 +178,27 @@ python -m unittest tools/test_polaris_dt_regs.py tools/test_polaris_gmu_csr.py
 ```
 
 Bash 里 `python` 换成 `python3` 亦可；Windows 下路径用 `E:/...` 形式传给 Python。
+
+## 9. 已实现（0097，默认关闭）
+
+§6 的两个理由都不成立了：0096 已经由 CI 编过（§16）并在真机上跑过（启动镜像文档 §7），
+所以现在可以只把那九次读加进去，不与未验证的东西叠在一起。
+
+`xnu/patches/0097-polaris-gx-readonly-probe.patch`（+112 行，只改 `bsd/dev/polaris_gpu.c`）：
+
+- 新 boot-arg **`polarisgxprobe=1`**，默认 0——默认路径与 0093–0096 完全一致；
+- 只在 `POLARIS_GPU_FIRMWARE` 这个阶段、也就是**摘要已经匹配之后**执行；
+- 先 `ml_io_map` 两个窗口（GMU `0x0506a000+0x30000`、PDC `0x0b200000+0x30000`），
+  再逐条读九个字；每个字在读之前都检查是否落在窗口内、是否 4 字节对齐；
+- **读一个、打印一个**，然后才读下一个。若 GX 未给时钟导致读操作 aborts，
+  console ring 里会留下已经到手的值，正好回答 §7 表里第一项
+  （"GX 关闭时读 GMU CSR 是否安全"）；
+- 任一字连续两次读到 `0xFFFFFFFF` 就停止（§4.4），不再往下读；
+- 读完之后仍然打印 `FIRMWARE backend not implemented; no hardware access` 并返回失败——
+  **门的行为不变**，0097 只加观测，不加能力。
+
+上机时要在命令行里加 `polarisgxprobe=1`，预期输出九行
+`POLARIS GPU: gx <name> @0x........ = 0x........`，其中 `CONTROL_ACK` 与 `PDC_GPU_ENABLE_PDC`
+各多一行 `bitN = 0/1`，按 §3 的矩阵判读。
+
+**仍未证**：读是否真的安全（这正是这次要测的）；以及 §7 表里其余四项。

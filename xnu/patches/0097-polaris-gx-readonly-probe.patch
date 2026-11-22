@@ -1,0 +1,131 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -183,6 +183,112 @@
+ }
+ 
+ /*
++ * M0a read-only probe (0097). Nine words that say what the GX domain is right
++ * now, read and nothing else: no write, no vote, no power-on, and the gate
++ * still refuses at this stage afterwards. Addresses come from the vendor
++ * device tree (research/polaris/m0a-gx-readonly-probe.zh-CN.md section 2).
++ *
++ * A wrong window base would not fault - it would silently read a neighbouring
++ * block - so every word is checked against the two windows before it is read.
++ * The reads are one at a time and each is printed as it lands: the open
++ * question is whether reading GMU CSR with the domain unclocked is even legal,
++ * and if it aborts, the console ring still holds the values that did arrive.
++ */
++#define POLARIS_GMU_PA      0x0506a000ULL
++#define POLARIS_GMU_SIZE    0x00030000ULL
++#define POLARIS_PDC_PA      0x0b200000ULL
++#define POLARIS_PDC_SIZE    0x00030000ULL
++
++struct polaris_gx_word {
++	const char *name;
++	uint64_t    pa;
++	int         bit;        /* value bit worth naming, -1 for none */
++};
++
++static const struct polaris_gx_word polaris_gx_words[] = {
++	{ "RSCC_RSC_STATUS0_DRV0",   0x0508d010ULL, 16 },
++	{ "RSCC_PDC_SLAVE_ID_DRV0",  0x0508d02cULL, -1 },
++	{ "RSCC_PDC_SEQ_START_ADDR", 0x0508d020ULL, -1 },
++	{ "RSCC_PDC_MATCH_VALUE_LO", 0x0508d024ULL, -1 },
++	{ "RSCC_PDC_MATCH_VALUE_HI", 0x0508d028ULL, -1 },
++	{ "PDC_GPU_ENABLE_PDC",      0x0b284500ULL,  0 },
++	{ "RSCC_SEQ_BUSY_DRV0",      0x0508d404ULL, -1 },
++	{ "GMU_RSCC_CONTROL_REQ",    0x0508ec1cULL,  1 },
++	{ "GMU_RSCC_CONTROL_ACK",    0x0508ec20ULL,  1 },
++};
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void ml_io_unmap(vm_offset_t, vm_size_t);
++
++static bool
++polaris_gx_in_window(uint64_t pa)
++{
++	if (pa >= POLARIS_GMU_PA && pa < POLARIS_GMU_PA + POLARIS_GMU_SIZE) {
++		return true;
++	}
++	if (pa >= POLARIS_PDC_PA && pa < POLARIS_PDC_PA + POLARIS_PDC_SIZE) {
++		return true;
++	}
++	return false;
++}
++
++static void
++polaris_gx_readonly_probe(void)
++{
++	vm_offset_t gmu, pdc;
++	size_t i, words = sizeof(polaris_gx_words) / sizeof(polaris_gx_words[0]);
++
++	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	pdc = ml_io_map((vm_offset_t)POLARIS_PDC_PA, (vm_size_t)POLARIS_PDC_SIZE);
++	if (gmu == 0 || pdc == 0) {
++		printf("POLARIS GPU: gx probe refused; window map failed (gmu %d pdc %d)\n",
++		    gmu != 0, pdc != 0);
++		if (gmu != 0) {
++			ml_io_unmap(gmu, (vm_size_t)POLARIS_GMU_SIZE);
++		}
++		if (pdc != 0) {
++			ml_io_unmap(pdc, (vm_size_t)POLARIS_PDC_SIZE);
++		}
++		return;
++	}
++
++	for (i = 0; i < words; i++) {
++		const struct polaris_gx_word *w = &polaris_gx_words[i];
++		volatile const uint32_t *reg;
++		uint32_t first, second;
++
++		if (!polaris_gx_in_window(w->pa) || (w->pa & 0x3) != 0) {
++			printf("POLARIS GPU: gx probe refused; %s outside the two windows\n",
++			    w->name);
++			break;
++		}
++		if (w->pa >= POLARIS_PDC_PA) {
++			reg = (volatile const uint32_t *)(uintptr_t)(pdc +
++			    (w->pa - POLARIS_PDC_PA));
++		} else {
++			reg = (volatile const uint32_t *)(uintptr_t)(gmu +
++			    (w->pa - POLARIS_GMU_PA));
++		}
++		first = *reg;
++		second = *reg;
++		printf("POLARIS GPU: gx %-24s @0x%08llx = 0x%08x\n", w->name,
++		    (unsigned long long)w->pa, first);
++		if (w->bit >= 0) {
++			printf("POLARIS GPU: gx %-24s bit%d = %u\n", w->name, w->bit,
++			    (unsigned)((first >> w->bit) & 1u));
++		}
++		if (first == 0xffffffffu && second == 0xffffffffu) {
++			printf("POLARIS GPU: gx probe stopped; %s reads all ones\n",
++			    w->name);
++			break;
++		}
++	}
++
++	ml_io_unmap(gmu, (vm_size_t)POLARIS_GMU_SIZE);
++	ml_io_unmap(pdc, (vm_size_t)POLARIS_PDC_SIZE);
++}
++
++/*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+  * No stages after the board stage have a backend in this revision.
+@@ -196,6 +302,15 @@
+ 		return false;
+ 	}
+ 	if (stage != POLARIS_GPU_BOARD) {
++		if (stage == POLARIS_GPU_FIRMWARE) {
++			int probe = 0;
++
++			/* Opt-in and read-only; reached only after the digests matched. */
++			PE_parse_boot_argn("polarisgxprobe", &probe, sizeof(probe));
++			if (probe) {
++				polaris_gx_readonly_probe();
++			}
++		}
+ 		printf("POLARIS GPU: %s backend not implemented; no hardware access\n",
+ 		    polaris_gpu_stage_name[stage]);
+ 		return false;
