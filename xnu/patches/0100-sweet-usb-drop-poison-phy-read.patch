@@ -1,0 +1,29 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -124,7 +124,6 @@
+ 		printf("SWEET USB: ahb2phy clock off; QUSB2 PHY not read\n");
+ 		return;
+ 	}
+-	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+ 	if (phy == 0) {
+ 		return;
+ 	}
+@@ -879,11 +878,13 @@
+ 	printf("SWEET USB: state %s: evt addr 0x%08x%08x siz 0x%08x count 0x%08x dalepena 0x%08x\n",
+ 	    when, dwc_rd(GEVNTADRHI), dwc_rd(GEVNTADRLO), dwc_rd(GEVNTSIZ),
+ 	    dwc_rd(GEVNTCOUNT), dwc_rd(DALEPENA));
+-	if (phy != 0) {
+-		printf("SWEET USB: state %s: QUSB2 PLL_STATUS 0x%08x PWR_CTRL1 0x%08x\n",
+-		    when, usb_rd(phy, 0x1a0), usb_rd(phy, 0x210));
+-		ml_io_unmap(phy, QUSB2_SIZE);
+-	}
++	/*
++	 * The QUSB2 register block is deliberately not read here. Mapping it in this
++	 * path returned 0x64646464 / 0x23232323 (DEBUG fill), i.e. not registers, and
++	 * unmapping it panics in vm_map_delete ("start is not aligned to 0x4000").
++	 * The PHY state that matters is already covered by GUSB2PHYCFG.SusPHY above;
++	 * the probe path in sweet_usb_probe() reads it before the gadget starts.
++	 */
+ 	printf("SWEET USB: state %s: DEPCMD(0) 0x%08x DEPCMD(1) 0x%08x\n",
+ 	    when, dwc_rd(DEPCMD(0)), dwc_rd(DEPCMD(1)));
+ }

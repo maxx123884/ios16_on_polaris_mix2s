@@ -143,6 +143,17 @@ journaled, noatime)`, BindFS, data-protection and obliteration boot tasks all ra
 panicked in the probe left no ring entry at all - the panic lands before the first 1 s flush, so the
 framebuffer (a photo) is the only channel for those.
 
+**With 0099's window fix the probe read all nine words** (2026-11-23 01:35, image
+`shim-polaris-xnu-0099probe.img`): `PDC_SLAVE_ID 0x00000001`, `SEQ_START 0x4520`, `MATCH_LO 0x4510`,
+`MATCH_HI 0x4514`, `PDC_GPU_ENABLE 0x00000000` (bit0 0), `SEQ_BUSY 0`, `CONTROL_REQ 0` (bit1 0),
+`CONTROL_ACK 0` (bit1 0), `RSC_STATUS0` bit16 0. GX is not powered, the vendor PDC program is present but
+disabled, the sequencer is idle, and RSC was left awake by the bootloader - all first-party now, and the
+matrix's hard constraint applies: with `CONTROL_ACK` bit1 = 0 nothing may write `CONTROL_REQ`.
+0098's dump also fired and cleared two of the four ep0 hypotheses: `prtcapdir 2` (device mode),
+`clkgtng-off 0`, `susphy 0`, event buffer programmed (`evt addr 0x183044000 siz 0x1000`), `halted 1`,
+`runstop 0`. Its QUSB2 read returned DEBUG fill (`0x64646464`, `0x23232323`) and the `ml_io_unmap` after it
+panicked again (`start is not aligned to 0x4000`); `0100` drops both.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

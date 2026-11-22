@@ -237,3 +237,43 @@ POLARIS GPU: gx probe refused; PDC_GPU_ENABLE_PDC outside the two windows
 
 `0099-polaris-gx-probe-window-fix.patch`（+8 行）修掉这两处：窗口改成 `0x00300000`，去掉两次 unmap
 （两个窗口在本次启动内保持映射，与哈希路径一致）。
+
+## 11. 九个字全部读到（2026-11-23 01:35，0099 之后）
+
+上一轮的窗口 bug 修掉后，同一次启动把九个字全打了出来：
+
+| 寄存器 | 值 | 判读（按 §3 矩阵） |
+|---|---|---|
+| `RSCC_RSC_STATUS0_DRV0` bit16 | 0 | RSC 被 bootloader 留在唤醒态 |
+| `RSCC_PDC_SLAVE_ID_DRV0` | `0x00000001` | 记录，无手册可对 |
+| `RSCC_PDC_SEQ_START_ADDR` | `0x00004520` | 厂商 PDC 程序仍在 |
+| `RSCC_PDC_MATCH_VALUE_LO` | `0x00004510` | 同上 |
+| `RSCC_PDC_MATCH_VALUE_HI` | `0x00004514` | 同上 |
+| `PDC_GPU_ENABLE_PDC` | `0x00000000`（bit0 = 0） | **PDC 未使能** |
+| `RSCC_SEQ_BUSY_DRV0` | `0` | 定序器空闲 |
+| `GMU_RSCC_CONTROL_REQ` | `0`（bit1 = 0） | 没有人在请求上电 |
+| `GMU_RSCC_CONTROL_ACK` | `0`（bit1 = 0） | **GX 此刻是关着的** |
+
+这张表现在是**本机事实**，不是第三方观测：GX 没上电、PDC 计划已就位但没使能、定序器空闲，
+RSC 却已经被 bootloader 唤醒。对 M0b 的直接约束是 §3 那一条——`CONTROL_ACK` bit1 = 0 时
+**不得**写 `CONTROL_REQ`。
+
+### 同一轮里 0098 的读数
+
+```
+state before ep0: GCTL 0x00112000 DCTL 0x00000000 DCFG 0x00480824 DSTS 0x00020010
+state before ep0: prtcapdir 2 clkgtng-off 0 runstop 0 halted 1 speed 0
+state before ep0: GUSB2PHYCFG 0x00002400 (susphy 0) GUSB3PIPECTL0 0x83000002
+state before ep0: evt addr 0x0000000183044000 siz 0x00001000 count 0 dalepena 0
+state before ep0: QUSB2 PLL_STATUS 0x64646464 PWR_CTRL1 0x23232323
+```
+
+`prtcapdir 2` = device 模式、`clkgtng-off 0` = 时钟门控已解除、`susphy 0` = PHY 未挂起：
+ep0 卡死的四个候选里前两个**当场被排除**。剩下的是命令环 / `DEPSTARTCFG` 语义这一类。
+
+最后一行是毒值：`0x64646464`（`'d'` 重复）与 `0x23232323`（`'#'` 重复）是 DEBUG 填充，说明那段
+QUSB2 映射读到的不是寄存器；而且随后的 `ml_io_unmap` 又触发了
+`vm_map_delete(...): start is not aligned to 0x4000` 的 panic。
+
+`0100-sweet-usb-drop-poison-phy-read.patch` 删掉这两处（map 与 unmap 一起）：PHY 状态已经由
+`GUSB2PHYCFG.SusPHY` 覆盖，`sweet_usb_probe()` 里也有一次正经的读数。
