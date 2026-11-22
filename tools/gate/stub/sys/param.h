@@ -9,6 +9,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+/* 0097 gave polaris_gpu.c a vm_offset_t/uintptr_t surface (the probe maps two windows);
+ * XNU's own <sys/param.h> drags these in, so the stand-in does too. */
+#include <mach/vm_types.h>
 
 typedef unsigned int boolean_t;
 

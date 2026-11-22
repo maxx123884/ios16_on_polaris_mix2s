@@ -1,0 +1,159 @@
+--- a/bsd/dev/polaris_gpu_validate.h
++++ b/bsd/dev/polaris_gpu_validate.h
+@@ -133,4 +133,38 @@
+ pg_validate_handoff(const struct pg_handoff *handoff,
+     const struct pg_expect *expect, struct pg_validate_result *result);
+ 
++/*
++ * Phase 3: what the measured GX state permits. Pure, like phase 1 and 2 - the
++ * caller passes the nine words that polaris_gx_readonly_probe() read, and this
++ * returns the only action that state authorises. It is the single place
++ * allowed to say "a write to GMU_RSCC_CONTROL_REQ is permitted", so a refusal
++ * here must leave the CPU framebuffer and the 0090 touch path alone.
++ *
++ * The matrix is m0a-gx-readonly-probe.zh-CN.md section 3; the measured values
++ * from the phone are in section 11.
++ */
++#define PG_GX_BIT_ON		0x2u	/* bit1 of RSCC_CONTROL_{REQ,ACK} */
++#define PG_GX_PDC_SEQ_START	0x4520u	/* vendor PDC program, measured */
++
++struct pg_gx_state {
++	bool     firmware_proven;
++	uint32_t control_ack;	/* GMU_RSCC_CONTROL_ACK */
++	uint32_t control_req;	/* GMU_RSCC_CONTROL_REQ */
++	uint32_t seq_busy;	/* RSCC_SEQ_BUSY_DRV0 */
++	uint32_t pdc_enable;	/* PDC_GPU_ENABLE_PDC */
++	uint32_t seq_start;	/* RSCC_PDC_SEQ_START_ADDR */
++};
++
++enum pg_gx_action {
++	PG_GX_WRITE_REQ = 0,	/* off, idle, vendor PDC program in place, proven */
++	PG_GX_REFUSE_UNPROVEN,	/* digests never matched: no MMIO at all */
++	PG_GX_REFUSE_SEQ_BUSY,	/* someone else is running a sequence */
++	PG_GX_REFUSE_INCONSISTENT,	/* REQ without ACK, or ACK without REQ */
++	PG_GX_REFUSE_ALREADY_ON,	/* already powered: writing REQ again is wrong */
++	PG_GX_REFUSE_NO_PDC	/* the 0x4520 program is not there */
++};
++
++enum pg_gx_action pg_gx_decide(const struct pg_gx_state *state);
++const char *pg_gx_action_name(enum pg_gx_action action);
++
+ #endif /* _BSD_DEV_POLARIS_GPU_VALIDATE_H_ */
+--- a/bsd/dev/polaris_gpu_validate.c
++++ b/bsd/dev/polaris_gpu_validate.c
+@@ -247,3 +247,58 @@
+ 	}
+ 	return pg_validate_digests(handoff, expect);
+ }
++
++/*
++ * The GX decision. Order matters and is the matrix's: an unproven handoff never
++ * reaches MMIO, a busy sequencer stops everything, and a request that disagrees
++ * with its acknowledge is a state we do not understand well enough to add to.
++ */
++enum pg_gx_action
++pg_gx_decide(const struct pg_gx_state *state)
++{
++	bool ack, req;
++
++	if (state == NULL) {
++		return PG_GX_REFUSE_UNPROVEN;
++	}
++	if (!state->firmware_proven) {
++		return PG_GX_REFUSE_UNPROVEN;
++	}
++	if (state->seq_busy != 0) {
++		return PG_GX_REFUSE_SEQ_BUSY;
++	}
++	ack = (state->control_ack & PG_GX_BIT_ON) != 0;
++	req = (state->control_req & PG_GX_BIT_ON) != 0;
++	if (ack != req) {
++		return PG_GX_REFUSE_INCONSISTENT;
++	}
++	if (ack) {
++		return PG_GX_REFUSE_ALREADY_ON;
++	}
++	if (state->seq_start != PG_GX_PDC_SEQ_START) {
++		return PG_GX_REFUSE_NO_PDC;
++	}
++	return PG_GX_WRITE_REQ;
++}
++
++const char *
++pg_gx_action_name(enum pg_gx_action action)
++{
++	switch (action) {
++	case PG_GX_WRITE_REQ:
++		return "write RSCC_CONTROL_REQ allowed";
++	case PG_GX_REFUSE_UNPROVEN:
++		return "refused: firmware not proven";
++	case PG_GX_REFUSE_SEQ_BUSY:
++		return "refused: sequencer busy";
++	case PG_GX_REFUSE_INCONSISTENT:
++		return "refused: REQ/ACK disagree";
++	case PG_GX_REFUSE_ALREADY_ON:
++		return "refused: GX already powered";
++	case PG_GX_REFUSE_NO_PDC:
++		return "refused: vendor PDC program missing";
++	default:
++		break;
++	}
++	return "refused: unknown state";
++}
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -239,6 +239,8 @@
+ {
+ 	vm_offset_t gmu, pdc;
+ 	size_t i, words = sizeof(polaris_gx_words) / sizeof(polaris_gx_words[0]);
++	struct pg_gx_state gx = { false, 0, 0, 0, 0, 0 };
++	bool complete = true;
+ 
+ 	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
+ 	pdc = ml_io_map((vm_offset_t)POLARIS_PDC_PA, (vm_size_t)POLARIS_PDC_SIZE);
+@@ -256,6 +258,7 @@
+ 		if (!polaris_gx_in_window(w->pa) || (w->pa & 0x3) != 0) {
+ 			printf("POLARIS GPU: gx probe refused; %s outside the two windows\n",
+ 			    w->name);
++			complete = false;
+ 			break;
+ 		}
+ 		if (w->pa >= POLARIS_PDC_PA) {
+@@ -267,6 +270,14 @@
+ 		}
+ 		first = *reg;
+ 		second = *reg;
++		switch (i) {
++		case 2: gx.seq_start = first; break;
++		case 5: gx.pdc_enable = first; break;
++		case 6: gx.seq_busy = first; break;
++		case 7: gx.control_req = first; break;
++		case 8: gx.control_ack = first; break;
++		default: break;
++		}
+ 		printf("POLARIS GPU: gx %-24s @0x%08llx = 0x%08x\n", w->name,
+ 		    (unsigned long long)w->pa, first);
+ 		if (w->bit >= 0) {
+@@ -276,11 +287,22 @@
+ 		if (first == 0xffffffffu && second == 0xffffffffu) {
+ 			printf("POLARIS GPU: gx probe stopped; %s reads all ones\n",
+ 			    w->name);
++			complete = false;
+ 			break;
+ 		}
+ 	}
+ 
+ 	/*
++	 * The decision, not the read, is what may ever authorise a write. It is
++	 * printed here as a plan: this revision still writes nothing.
++	 */
++	if (complete) {
++		gx.firmware_proven = true;	/* the probe runs only after the digests matched */
++		printf("POLARIS GPU: gx decision: %s (plan only; nothing written)\n",
++		    pg_gx_action_name(pg_gx_decide(&gx)));
++	}
++
++	/*
+ 	 * No unmap. ml_io_unmap() on these mappings panics in vm_map_delete
+ 	 * ("start is not aligned"), and the gate is about to refuse anyway, so the
+ 	 * two windows stay mapped for the life of this boot. Same as the hash path.

@@ -190,6 +190,16 @@ event - so the missing piece is in the setup that precedes the commands (`GRXTHR
 `resize_tx_fifos`), not in the ordering. USB netconsole is a convenience, not a capability, so this stops
 here until the GPU line has nothing better to do.
 
+**Then the GPU line took that time instead: the matrix became code (0105).** `pg_gx_decide()` in
+`polaris_gpu_validate.c` is a pure function over the nine measured words and returns the only action the
+state authorises - unproven, sequencer busy, REQ/ACK disagreeing, already powered, missing the 0x4520 PDC
+program, or `PG_GX_WRITE_REQ`. The values measured on the phone (`ACK 0`, `REQ 0`, `SEQ_BUSY 0`,
+`SEQ_START 0x4520`, digests proven) land on `PG_GX_WRITE_REQ`, so the gate now prints
+"write RSCC_CONTROL_REQ allowed (plan only; nothing written)" - the decision exists, the write does not.
+Seven assertions were added to `tools/test_polaris_gpu_validate.c` (NULL, inconsistent REQ/ACK, missing
+PDC, and every refusal name); with the existing cases they pass on the host, and the three sources still
+compile under `-Weverything -Werror` against the real headers.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

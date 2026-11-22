@@ -277,3 +277,30 @@ QUSB2 映射读到的不是寄存器；而且随后的 `ml_io_unmap` 又触发�
 
 `0100-sweet-usb-drop-poison-phy-read.patch` 删掉这两处（map 与 unmap 一起）：PHY 状态已经由
 `GUSB2PHYCFG.SusPHY` 覆盖，`sweet_usb_probe()` 里也有一次正经的读数。
+
+## 12. 矩阵变成代码（0105）
+
+上面那张表不再只是文档：`pg_gx_decide()` 把它写成了一个纯函数，输入就是探测到的九个字，
+输出**唯一允许的动作**。
+
+```c
+enum pg_gx_action {
+	PG_GX_WRITE_REQ,		/* 关着、空闲、厂商 PDC 程序在位、摘要已证 */
+	PG_GX_REFUSE_UNPROVEN,		/* 摘要没证：一次 MMIO 都不做 */
+	PG_GX_REFUSE_SEQ_BUSY,		/* 别人正在跑序列 */
+	PG_GX_REFUSE_INCONSISTENT,	/* REQ 与 ACK 不一致 */
+	PG_GX_REFUSE_ALREADY_ON,	/* 已经上电，再写 REQ 是错的 */
+	PG_GX_REFUSE_NO_PDC		/* 0x4520 的 PDC 程序不在 */
+};
+```
+
+判定顺序就是矩阵的顺序：未证 → 忙 → REQ/ACK 不一致 → 已上电 → 缺 PDC → 放行。
+本机实测的那一组（`ACK=0`、`REQ=0`、`SEQ_BUSY=0`、`SEQ_START=0x4520`、摘要已证）落在
+**`PG_GX_WRITE_REQ`**——也就是"下一个后端可以写 `CONTROL_REQ` 了"，但这一版**只打印计划、不写**：
+
+```
+POLARIS GPU: gx decision: write RSCC_CONTROL_REQ allowed (plan only; nothing written)
+```
+
+`tools/test_polaris_gpu_validate.c` 增加了 7 条断言（含 `NULL`、REQ/ACK 不一致、缺 PDC），
+与原有 51 条一起在主机上跑通。

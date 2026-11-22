@@ -28,6 +28,14 @@
 static char g_log[16384];
 static size_t g_log_len;
 
+/* 0097's probe unmaps what it mapped; the harness keeps its maps listed. */
+void
+ml_io_unmap(vm_offset_t addr, vm_size_t size)
+{
+	(void)addr;
+	(void)size;
+}
+
 void
 klog_reset(void)
 {
