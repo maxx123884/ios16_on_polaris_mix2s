@@ -84,6 +84,21 @@ immediately; dropping those two words makes it behave like 0090. Unpack round-tr
 (`cmp` ramdisk == payload). Never booted. The ADT lacks `/product` because `research/ipsw-x/d22ap.adt`
 is still missing, so iPhone X identity is incomplete - the gate does not depend on it.
 
+**It was then booted on the phone (2026-11-23 00:14), and the gate ran.** `fastboot boot` of
+`build/shim-polaris-xnu-0096ci.img` (serial `4f19236e`) reached launchd; the gate's output had scrolled off
+the panel, so TWRP + `adb exec-out dd` read the 0047 console ring (userdata = `/dev/block/sda21`, 249,384,906,752 B,
+last 1100 blocks) and it is at offset 316,117:
+`POLARIS GPU: layout accepted, 6 blobs, 131072 bytes in plan` /
+`POLARIS GPU: firmware proven against the pinned set` /
+`POLARIS GPU: firmware backend not implemented; no hardware access` /
+`POLARIS GPU: acceleration unavailable; CPU display unchanged`, followed by `BSD root: ufsroot0, major 1, minor 0`.
+So 0093-0096 executed on the device, the six firmware SHA-256 values matched the pinned set **computed from the
+real memory-map bytes**, and the gate refused at the unimplemented stage as designed. GPU: still zero register
+access. Two side findings: the USB netconsole did not enumerate (`SWEET USB: ep0 cmd 0x1 timeout`,
+`endpoint 0 setup failed`), which is why nothing appeared on the Windows side and why the ring route was needed;
+and the root did not mount (`setuidGoldMask: Error 16 opening /dev/ufsroot0`, `hfs: remount of data volume (apfs)
+is in state of change`), i.e. current userdata has no HFS+ root this kernel can mount - unrelated to the image.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

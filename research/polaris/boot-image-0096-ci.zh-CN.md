@@ -78,3 +78,42 @@ fastboot boot build/shim-polaris-xnu-0096ci.img
 
 这是设备操作，需要明确同意；预期输出是门在第一个未实现阶段拒绝并打印
 `POLARIS GPU: acceleration unavailable; CPU display unchanged`，显示仍走 CPU。
+
+## 7. 真机执行结果（2026-11-23 00:14，首次）
+
+`fastboot boot` 成功（`Sending 18260 KB OKAY` / `Booting OKAY`），serial `4f19236e`。屏幕上 XNU 一路跑到
+launchd；门的输出早在 launchd 之前就滚出屏幕，因此改用 0047 的 console ring 取全文——临时启动 TWRP，
+`adb exec-out dd` 读 `userdata`（`/dev/block/sda21`，249,384,906,752 B）末尾 1100 块，在偏移 316,117 处
+找到：
+
+```
+SWEET UFS: "userdata" on LUN 0: first block 0x60000, 237831 MiB, read-write, DMA at 0x103740000
+SWEET LOG: console log to the last 4100 KiB of the partition (block 0x3a703fa)
+POLARIS TOUCH: read-only diagnostics off (polaristouchdiag=1)
+POLARIS GPU: layout accepted, 6 blobs, 131072 bytes in plan
+POLARIS GPU: firmware proven against the pinned set
+POLARIS GPU: firmware backend not implemented; no hardware access
+POLARIS GPU: acceleration unavailable; CPU display unchanged
+BSD root: ufsroot0, major 1, minor 0
+```
+
+这四行是 0093–0096 第一次**在真机上执行**，每行的含义：
+
+| 行 | 证明了什么 |
+|---|---|
+| `layout accepted, 6 blobs, 131072 bytes in plan` | `/chosen/memory-map` 的六个条目被读到，`pg_validate_layout` 在真机上接受了布局与 16 KiB 页对齐 |
+| `firmware proven against the pinned set` | **六个固件的 SHA-256 在设备上算出并与 0095/0096 钉住的值逐条相同**——读的是真实内存里的字节，不是主机文件 |
+| `firmware backend not implemented; no hardware access` | 门在第一个未实现的阶段停下，符合“fail-closed”设计 |
+| `acceleration unavailable; CPU display unchanged` | 拒绝路径完整，显示仍走 CPU |
+
+也就是说：**0094 的校验器、0095 的尺寸表、0096 的哈希后端在真机上全部按预期工作**，而且它们读的是
+payload 里那六个固件段的真实物理地址。GPU 依旧零寄存器访问、零上电。
+
+### 副产物：两个已知问题被这条日志暴露
+
+1. **USB 网口没起来**：`SWEET USB: ep0 cmd 0x1 timeout` / `endpoint 0 setup failed`（GSNPSID
+   `0x5533300a`、`QUSB2 PLL_STATUS 0x6`），所以主机侧看不到网卡、`sweetusb=2` 的 console 流也就没接到。
+   这不影响本次结论（ring 已经拿到），但它是 0076 时代的回归点，值得单独查。
+2. **根挂载失败**：`setuidGoldMask: Error 16 opening /dev/ufsroot0`、`hfs: remount of data volume
+   (apfs) is in state of change`——当前 `userdata` 里没有这颗内核能挂的 HFS+ 根（看起来是 APFS），
+   所以停在 launchd 之后。与镜像无关，换成有 iOS 根的 userdata 即可。
