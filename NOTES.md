@@ -200,6 +200,15 @@ Seven assertions were added to `tools/test_polaris_gpu_validate.c` (NULL, incons
 PDC, and every refusal name); with the existing cases they pass on the host, and the three sources still
 compile under `-Weverything -Werror` against the real headers.
 
+**M0b was then written as a design before any code** (`research/polaris/m0b-gx-power-request.zh-CN.md`):
+one bit, one register, milliseconds, reverted with a read-back. The first hardware write this project makes
+is `GMU_RSCC_CONTROL_REQ` bit1 at `0x0508ec1c` - not a GDSCR flip, which the bring-up contract forbids and
+which belongs to another owner. The state machine is snapshot -> set REQ -> wait 20 ms for ACK -> snapshot ->
+clear REQ -> wait for ACK 0 -> done, with QUARANTINE if the acknowledge does not follow in either direction.
+Its judgement table is the part worth keeping: ack up but not down means we do not own the way back, and
+that stops M1 outright. Nothing is acquired here - no clock vote, no GMU firmware, no SMMU, no CP - so the
+GX domain is never left powered on our behalf.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
