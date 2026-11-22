@@ -109,6 +109,17 @@ applies cleanly to the 0096 output and the file it produces is byte-identical to
 `-Weverything -Werror` against the real headers (13 externals, `ml_io_unmap` now among them), and
 `validate-repo` accepts 0001-0097 as contiguous.
 
+**Patch 0098 (ep0 state dump) followed, because 0097 could not be pushed** (`github.com` unreachable
+from this machine for a while; `api.github.com` fine). It answers the ep0 timeout with one boot instead of
+one boot per theory: `DEPSTARTCFG` does return and the *second* command (`SETEPCONFIG` on ep0) never clears
+CMDACT, so the command interface accepted one command and then stopped - which points at state, not encoding.
+`ud_dump_state()` prints GCTL/DCTL/DCFG/DSTS, the decoded `PrtCapDir`/`DsblClkGtng`/`RunStop`/`halted`/speed,
+GUSB2PHYCFG.SusPHY, GUSB3PIPECTL0, the event buffer registers, DALEPENA, QUSB2 PLL_STATUS and both DEPCMD
+readbacks; the timeout path now prints the register it was polling plus DSTS/DCTL. Diagnostics only - nothing
+is written, behaviour is unchanged. It could **not** be compile-checked locally: `sweet_usb.c` pulls
+`kpi_mbuf.h`, which needs the full kernel include environment this host harness does not provide (the tool
+covers only the three `polaris_gpu*.c` files), so its first real compile is CI.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

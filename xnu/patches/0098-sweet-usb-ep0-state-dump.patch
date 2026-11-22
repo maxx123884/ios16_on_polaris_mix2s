@@ -1,0 +1,73 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -38,6 +38,7 @@
+ #include <sys/kern_event.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void ml_io_unmap(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+@@ -285,7 +286,8 @@
+ 		}
+ 		delay(1);
+ 	}
+-	printf("SWEET USB: ep%u cmd 0x%x timeout\n", ep, cmd & 0xf);
++	printf("SWEET USB: ep%u cmd 0x%x timeout; DEPCMD 0x%08x DSTS 0x%08x DCTL 0x%08x\n",
++	    ep, cmd & 0xf, dwc_rd(DEPCMD(ep)), dwc_rd(DSTS), dwc_rd(DCTL));
+ 	return -1;
+ }
+ 
+@@ -848,6 +850,44 @@
+ 	}
+ }
+ 
++/*
++ * 0098: the state that decides whether an endpoint command can execute at all.
++ *
++ * DEPSTARTCFG returns, then SETEPCONFIG on ep0 never clears CMDACT. That means
++ * the command interface accepted one command and then stopped, which points at
++ * the things printed here rather than at the command encoding: whether the core
++ * is in device mode (GCTL.PrtCapDir), whether its clock gating is released
++ * (GCTL.DsblClkGtng), whether the UTMI PHY is suspended (GUSB2PHYCFG.SusPHY)
++ * and whether the QUSB2 PLL reports lock. Diagnostics only: nothing is written.
++ */
++#define GUSB2PHYCFG     0xc200
++#define GUSB3PIPECTL0   0xc2c0
++
++static void
++ud_dump_state(const char *when)
++{
++	uint32_t gctl = dwc_rd(GCTL), dctl = dwc_rd(DCTL), dcfg = dwc_rd(DCFG);
++	uint32_t dsts = dwc_rd(DSTS), g2 = dwc_rd(GUSB2PHYCFG), g3 = dwc_rd(GUSB3PIPECTL0);
++	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
++
++	printf("SWEET USB: state %s: GCTL 0x%08x DCTL 0x%08x DCFG 0x%08x DSTS 0x%08x\n",
++	    when, gctl, dctl, dcfg, dsts);
++	printf("SWEET USB: state %s: prtcapdir %u clkgtng-off %u runstop %u halted %u speed %u\n",
++	    when, (gctl >> 12) & 3u, gctl & 1u, dctl >> 31, (dsts >> 22) & 1u, dsts & 7u);
++	printf("SWEET USB: state %s: GUSB2PHYCFG 0x%08x (susphy %u) GUSB3PIPECTL0 0x%08x\n",
++	    when, g2, (g2 >> 6) & 1u, g3);
++	printf("SWEET USB: state %s: evt addr 0x%08x%08x siz 0x%08x count 0x%08x dalepena 0x%08x\n",
++	    when, dwc_rd(GEVNTADRHI), dwc_rd(GEVNTADRLO), dwc_rd(GEVNTSIZ),
++	    dwc_rd(GEVNTCOUNT), dwc_rd(DALEPENA));
++	if (phy != 0) {
++		printf("SWEET USB: state %s: QUSB2 PLL_STATUS 0x%08x PWR_CTRL1 0x%08x\n",
++		    when, usb_rd(phy, 0x1a0), usb_rd(phy, 0x210));
++		ml_io_unmap(phy, QUSB2_SIZE);
++	}
++	printf("SWEET USB: state %s: DEPCMD(0) 0x%08x DEPCMD(1) 0x%08x\n",
++	    when, dwc_rd(DEPCMD(0)), dwc_rd(DEPCMD(1)));
++}
++
+ static void
+ sweet_usb_gadget_start(vm_offset_t dwc)
+ {
+@@ -891,6 +931,7 @@
+ 	dwc_wr(DEVTEN, 0x7);
+ 
+ 	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
++	ud_dump_state("before ep0");
+ 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
+ 	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
+ 	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
