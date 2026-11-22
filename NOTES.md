@@ -160,6 +160,24 @@ there and unused in the dump, both fatal under `-Werror`. `0101` puts the probe'
 the stray declaration. Lesson for this file: `replace(old, '', 1)` is not safe when the same line exists
 twice; anchor on surrounding context.
 
+**0101 ran clean and the ring finally held everything** (2026-11-23 02:08, 908 KB, flush #31), including the
+line 0098 was built for:
+
+```
+state before ep0: GCTL 0x00112000 DCTL 0x00000000 DCFG 0x00480800 DSTS 0x00520018
+state before ep0: prtcapdir 2 clkgtng-off 0 runstop 0 halted 1 speed 0
+state before ep0: GUSB2PHYCFG 0x00002400 (susphy 0) GUSB3PIPECTL0 0x03080002
+state before ep0: evt addr 0x0000000103844000 siz 0x80001000 count 0 dalepena 0
+ep0 cmd 0x1 timeout; DEPCMD 0x00000401 DSTS 0x00520018 DCTL 0x00000000
+```
+
+`DEPCMD 0x401` decodes as type 1 (SETEPCONFIG), **CMDACT (bit 10) still set, status [15:12] = 0**: the write
+landed, the core never executed it and reported no error. `DCTL 0` says why - **RunStop was still 0**. 0073
+raised RunStop *after* configuring ep0, and bails out before reaching it, so it never ran. `0102` moves the
+RunStop + wait for `DSTS.DEVCTRLHLT` ahead of the endpoint commands, which is where Linux's
+`__dwc3_gadget_start()` puts it. That boot also mounted root and reached iOS userspace (SpringBoard,
+callservicesd, bluetoothd, fairplayd.H2 all exec'd), so the image itself is sound.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

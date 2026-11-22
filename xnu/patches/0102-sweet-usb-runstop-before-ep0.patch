@@ -1,0 +1,34 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -931,6 +931,19 @@
+ 	/* Events: disconnect, USB reset, connect done */
+ 	dwc_wr(DEVTEN, 0x7);
+ 
++	/*
++	 * RunStop before the endpoint commands, not after. Measured: with
++	 * DCTL.RunStop = 0 the ep0 SETEPCONFIG command is written (DEPCMD reads
++	 * 0x401 - type 1, CMDACT still set, status 0) and never executes, so the
++	 * core is telling us it is not running yet. Linux dwc3 raises RunStop in
++	 * __dwc3_gadget_start() before it configures ep0.
++	 */
++	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
++	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
++		delay(1000);
++	}
++	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
++
+ 	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
+ 	ud_dump_state("before ep0");
+ 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
+@@ -956,11 +969,6 @@
+ 		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
+ 	}
+ 
+-	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
+-	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
+-		delay(1000);
+-	}
+-	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
+ 	if (kernel_thread_start(ud_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
