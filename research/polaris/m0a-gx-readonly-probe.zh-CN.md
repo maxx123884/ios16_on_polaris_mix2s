@@ -202,3 +202,38 @@ Bash 里 `python` 换成 `python3` 亦可；Windows 下路径用 `E:/...` 形式
 各多一行 `bitN = 0/1`，按 §3 的矩阵判读。
 
 **仍未证**：读是否真的安全（这正是这次要测的）；以及 §7 表里其余四项。
+
+## 10. 第一次读到真值（2026-11-23 01:05），以及两个自造的 bug
+
+带 `polarisgxprobe=1` 的镜像启动后，探测确实执行了。console ring 这次没记到（见 §11），
+但屏幕上的帧缓冲 console 留下了原文：
+
+```
+POLARIS GPU: gx RSCC_RSC_STATUS0_DRV0     @0x0508d010 = 0x80000000   bit16 = 0
+POLARIS GPU: gx RSCC_PDC_SLAVE_ID_DRV0    @0x0508d02c = 0x80000001
+POLARIS GPU: gx RSCC_PDC_SEQ_START_ADDR   @0x0508d020 = 0x00004520
+POLARIS GPU: gx RSCC_PDC_MATCH_VALUE_LO   @0x0508d024 = 0x00004510
+POLARIS GPU: gx RSCC_PDC_MATCH_VALUE_HI   @0x0508d028 = 0x00004514
+POLARIS GPU: gx probe refused; PDC_GPU_ENABLE_PDC outside the two windows
+```
+
+按 §3 的矩阵判读：
+
+| 观察 | 结论 |
+|---|---|
+| `RSC_STATUS0` bit16 = 0 | **RSC 已被 bootloader 留在唤醒态**——与 §5 引用的第三方实现观测一致，属于本机第一次的自身证据 |
+| `SEQ_START=0x4520`、`MATCH_LO=0x4510`、`MATCH_HI=0x4514` | **厂商那套 PDC 程序仍在**，一个字都没被改过 |
+| 六次读都没有 abort | §7 第一项（"GX 关闭时读 GMU CSR 是否安全"）在 GMU 窗口内**部分成立**：这六个字读成功；PDC 窗口尚未真读过 |
+| `SLAVE_ID=0x80000001` | 记录，无手册可对 |
+
+**缺失的是后三个字**（`SEQ_BUSY`、`CONTROL_REQ`、`CONTROL_ACK`）——它们能回答"GX 现在到底上电没有"。
+
+### 两个 bug 都是自己写出来的
+
+1. **PDC 窗口少一个零**：写成了 `0x00030000`（192 KiB），设备树是 `0x300000`（3 MiB）。于是
+   `0x0b284500` 被判到窗口外，循环在第六项 break，后三个字没读。
+2. **`ml_io_unmap` 用法不当**：探测结束（以及拒绝路径）调用了 `ml_io_unmap`，内核在
+   `vm_map_delete(...): start is not aligned` 处 panic。哈希那条路径从来只 map 不 unmap，这里也应该一样。
+
+`0099-polaris-gx-probe-window-fix.patch`（+8 行）修掉这两处：窗口改成 `0x00300000`，去掉两次 unmap
+（两个窗口在本次启动内保持映射，与哈希路径一致）。

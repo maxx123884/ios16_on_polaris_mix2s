@@ -120,6 +120,17 @@ is written, behaviour is unchanged. It could **not** be compile-checked locally:
 `kpi_mbuf.h`, which needs the full kernel include environment this host harness does not provide (the tool
 covers only the three `polaris_gpu*.c` files), so its first real compile is CI.
 
+**The probe ran, and its first real readings are on the screen** (2026-11-23 01:05, image
+`shim-polaris-xnu-0097probe.img`, cmdline `... polarisgpu=1 polarisgpuhash=1 polarisgxprobe=1`):
+`RSCC_RSC_STATUS0_DRV0 @0x0508d010 = 0x80000000 (bit16 = 0)`, `RSCC_PDC_SLAVE_ID_DRV0 @0x0508d02c =
+0x80000001`, `RSCC_PDC_SEQ_START_ADDR = 0x4520`, `RSCC_PDC_MATCH_VALUE_LO = 0x4510`,
+`RSCC_PDC_MATCH_VALUE_HI = 0x4514`. So RSC is awake (bit16 clear, matching the third-party observation)
+and the vendor PDC program is still installed, untouched - both first-party now. Six reads, no abort.
+Then two bugs of my own: the PDC window was written as `0x30000` instead of `0x300000`, so
+`0x0b284500` fell outside and the loop broke before the three control words (`SEQ_BUSY`, `CONTROL_REQ`,
+`CONTROL_ACK`); and `ml_io_unmap` on these mappings panics (`vm_map_delete ... start is not aligned`) -
+the hash path never unmaps and neither should this. Patch `0099` fixes both: `0x00300000`, no unmap.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

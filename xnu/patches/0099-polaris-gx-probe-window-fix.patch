@@ -1,0 +1,40 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -197,7 +197,9 @@
+ #define POLARIS_GMU_PA      0x0506a000ULL
+ #define POLARIS_GMU_SIZE    0x00030000ULL
+ #define POLARIS_PDC_PA      0x0b200000ULL
+-#define POLARIS_PDC_SIZE    0x00030000ULL
++/* Vendor DT: 0x0b200000 + 0x300000. 0x30000 puts 0x0b284500 outside and
++ * the probe refused before it could read the three control words. */
++#define POLARIS_PDC_SIZE    0x00300000ULL
+ 
+ struct polaris_gx_word {
+ 	const char *name;
+@@ -243,12 +245,6 @@
+ 	if (gmu == 0 || pdc == 0) {
+ 		printf("POLARIS GPU: gx probe refused; window map failed (gmu %d pdc %d)\n",
+ 		    gmu != 0, pdc != 0);
+-		if (gmu != 0) {
+-			ml_io_unmap(gmu, (vm_size_t)POLARIS_GMU_SIZE);
+-		}
+-		if (pdc != 0) {
+-			ml_io_unmap(pdc, (vm_size_t)POLARIS_PDC_SIZE);
+-		}
+ 		return;
+ 	}
+ 
+@@ -284,8 +280,11 @@
+ 		}
+ 	}
+ 
+-	ml_io_unmap(gmu, (vm_size_t)POLARIS_GMU_SIZE);
+-	ml_io_unmap(pdc, (vm_size_t)POLARIS_PDC_SIZE);
++	/*
++	 * No unmap. ml_io_unmap() on these mappings panics in vm_map_delete
++	 * ("start is not aligned"), and the gate is about to refuse anyway, so the
++	 * two windows stay mapped for the life of this boot. Same as the hash path.
++	 */
+ }
+ 
+ /*
