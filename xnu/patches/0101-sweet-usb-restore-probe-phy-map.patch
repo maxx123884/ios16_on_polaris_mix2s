@@ -1,0 +1,18 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -124,6 +124,7 @@
+ 		printf("SWEET USB: ahb2phy clock off; QUSB2 PHY not read\n");
+ 		return;
+ 	}
++	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+ 	if (phy == 0) {
+ 		return;
+ 	}
+@@ -867,7 +868,6 @@
+ {
+ 	uint32_t gctl = dwc_rd(GCTL), dctl = dwc_rd(DCTL), dcfg = dwc_rd(DCFG);
+ 	uint32_t dsts = dwc_rd(DSTS), g2 = dwc_rd(GUSB2PHYCFG), g3 = dwc_rd(GUSB3PIPECTL0);
+-	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+ 
+ 	printf("SWEET USB: state %s: GCTL 0x%08x DCTL 0x%08x DCFG 0x%08x DSTS 0x%08x\n",
+ 	    when, gctl, dctl, dcfg, dsts);

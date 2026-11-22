@@ -154,6 +154,12 @@ matrix's hard constraint applies: with `CONTROL_ACK` bit1 = 0 nothing may write 
 `runstop 0`. Its QUSB2 read returned DEBUG fill (`0x64646464`, `0x23232323`) and the `ml_io_unmap` after it
 panicked again (`start is not aligned to 0x4000`); `0100` drops both.
 
+`0100` itself then failed CI (Build, exit 2): the edit meant to delete the QUSB2 mapping inside `ud_dump_state`
+hit the *first* occurrence of that line instead, which lives in `sweet_usb_probe()` - leaving `phy` undefined
+there and unused in the dump, both fatal under `-Werror`. `0101` puts the probe's mapping back and removes
+the stray declaration. Lesson for this file: `replace(old, '', 1)` is not safe when the same line exists
+twice; anchor on surrounding context.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
