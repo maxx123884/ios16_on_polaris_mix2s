@@ -131,6 +131,18 @@ Then two bugs of my own: the PDC window was written as `0x30000` instead of `0x3
 `CONTROL_ACK`); and `ml_io_unmap` on these mappings panics (`vm_map_delete ... start is not aligned`) -
 the hash path never unmaps and neither should this. Patch `0099` fixes both: `0x00300000`, no unmap.
 
+Two environment facts worth not relearning. First, `git push` from this machine keeps failing with
+`CONNECT tunnel failed, response 502` / `schannel: server closed abruptly` while `api.github.com` answers
+200: the sandbox routes git through its own proxy (`HTTPS_PROXY=127.0.0.1:57090`) and that one's upstream to
+`github.com` flaps. FlClash listens on `127.0.0.1:7890`; pushing with
+`https_proxy=http://127.0.0.1:7890` works every time. Second, the 0047 console ring must be read as
+**exactly the last 1025 blocks of userdata** and parsed with `tools/sweet-log.py` - reading a wider window
+shifts the SWEETLOG header by 4 MiB and the parser answers "no SWEETLOG header". Done right it decodes the
+whole boot, and it shows the 0096ci image did not stop at the root mount: `/dev/ufsroot0 on / (hfs, local,
+journaled, noatime)`, BindFS, data-protection and obliteration boot tasks all ran. The newer boots that
+panicked in the probe left no ring entry at all - the panic lands before the first 1 s flush, so the
+framebuffer (a photo) is the only channel for those.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
