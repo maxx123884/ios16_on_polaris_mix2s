@@ -1,0 +1,51 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -931,34 +931,10 @@
+ 	/* Events: disconnect, USB reset, connect done */
+ 	dwc_wr(DEVTEN, 0x7);
+ 
+-	/*
+-	 * RunStop before the endpoint commands, not after. Measured: with
+-	 * DCTL.RunStop = 0 the ep0 SETEPCONFIG command is written (DEPCMD reads
+-	 * 0x401 - type 1, CMDACT still set, status 0) and never executes, so the
+-	 * core is telling us it is not running yet. Linux dwc3 raises RunStop in
+-	 * __dwc3_gadget_start() before it configures ep0.
+-	 */
+-	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
+-	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
+-		delay(1000);
+-	}
+-	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
+-
+ 	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
+ 	ud_dump_state("before ep0");
+-	/*
+-	 * DEPSTARTCFG carries the transfer-resource count in its parameter word;
+-	 * ud_configure() passes (2 << 16) and this path passed nothing. Match it,
+-	 * then report what the core did with it before asking for ep0 - DEPSTARTCFG
+-	 * returning is the one command that does complete here.
+-	 */
+-	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG | (2u << 16), 0, 0, 0)) {
+-		printf("SWEET USB: endpoint 0 startcfg failed\n");
+-		return;
+-	}
+-	printf("SWEET USB: after startcfg: DEPCMD(0) 0x%08x GEVNTCOUNT 0x%08x DSTS 0x%08x\n",
+-	    dwc_rd(DEPCMD(0)), dwc_rd(GEVNTCOUNT), dwc_rd(DSTS));
+-	if (ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
++	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
++	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
+ 	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
+ 	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
+ 	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
+@@ -980,6 +956,11 @@
+ 		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
+ 	}
+ 
++	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
++	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
++		delay(1000);
++	}
++	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
+ 	if (kernel_thread_start(ud_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}

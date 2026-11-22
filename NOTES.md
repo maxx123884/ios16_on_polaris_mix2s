@@ -178,6 +178,18 @@ RunStop + wait for `DSTS.DEVCTRLHLT` ahead of the endpoint commands, which is wh
 `__dwc3_gadget_start()` puts it. That boot also mounted root and reached iOS userspace (SpringBoard,
 callservicesd, bluetoothd, fairplayd.H2 all exec'd), so the image itself is sound.
 
+**Then the upstream reference refuted both of those guesses.** Linux's `dwc3_gadget_soft_connect()` is
+`core_soft_reset -> event_buffers_setup -> __dwc3_gadget_start (DEPSTARTCFG, DEPCFG, SETTRANSFRESOURCE,
+DALEPENA) -> dwc3_gadget_run_stop(true)`: RunStop is raised **after** the endpoint commands, which is what
+0073 already did - and 0102's measurement (DCTL 0x80000000, runstop 1, halted 0) showed the move changed
+nothing. Worse, `dwc3_gadget_start_config(dwc, 0)` passes `resource_index = 0`; `(2 << 16)` is the
+SET_CONFIGURATION flavour, so 0103 changed a correct parameter into a wrong one. 0104 reverts both, leaving
+the tree with Linux's order and parameters. The remaining clue is the one that survives: `GEVNTCOUNT` stays
+0 and the second command's `CMDACT` never clears, while Linux only ever polls `CMDACT` and never waits on an
+event - so the missing piece is in the setup that precedes the commands (`GRXTHRCFG.PKTCNTSEL`, `DCFG.NUMP`,
+`resize_tx_fifos`), not in the ordering. USB netconsole is a convenience, not a capability, so this stops
+here until the GPU line has nothing better to do.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
