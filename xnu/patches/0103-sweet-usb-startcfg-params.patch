@@ -1,0 +1,24 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -946,8 +946,19 @@
+ 
+ 	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
+ 	ud_dump_state("before ep0");
+-	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
+-	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
++	/*
++	 * DEPSTARTCFG carries the transfer-resource count in its parameter word;
++	 * ud_configure() passes (2 << 16) and this path passed nothing. Match it,
++	 * then report what the core did with it before asking for ep0 - DEPSTARTCFG
++	 * returning is the one command that does complete here.
++	 */
++	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG | (2u << 16), 0, 0, 0)) {
++		printf("SWEET USB: endpoint 0 startcfg failed\n");
++		return;
++	}
++	printf("SWEET USB: after startcfg: DEPCMD(0) 0x%08x GEVNTCOUNT 0x%08x DSTS 0x%08x\n",
++	    dwc_rd(DEPCMD(0)), dwc_rd(GEVNTCOUNT), dwc_rd(DSTS));
++	if (ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
+ 	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
+ 	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
+ 	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
