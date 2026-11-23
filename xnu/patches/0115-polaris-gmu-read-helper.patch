@@ -1,0 +1,41 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -781,6 +781,13 @@
+ #define POLARIS_GMU_AO_INTR_STATUS_PA	0x0508ec14ULL	/* index 0x23B05 */
+ #define POLARIS_GMU_AO_AHB_FENCE_PA	0x0508ec40ULL	/* index 0x23B10 */
+ 
++/* GMU-window read: every address the M1 probe uses is in this window. */
++static uint32_t
++polaris_gmu_rd(vm_offset_t gmu, uint64_t pa)
++{
++	return *(volatile uint32_t *)(uintptr_t)(gmu + (pa - POLARIS_GMU_PA));
++}
++
+ static void
+ polaris_gx_m1_probe(void)
+ {
+@@ -792,15 +799,15 @@
+ 		printf("POLARIS GPU: m1 refused; GMU window map failed\n");
+ 		return;
+ 	}
+-	cx = *polaris_m0c_word(gmu, gmu, POLARIS_GDSCR_CX_PA);
+-	gx = *polaris_m0c_word(gmu, gmu, POLARIS_GDSCR_GX_PA);
+-	sysreset = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_CM3_SYSRESET_PA);
+-	cfg = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_CM3_CFG_PA);
+-	counter = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_PWR_COUNTER_PA);
+-	info = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_GMU2HOST_INFO_PA);
+-	set = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_HOST2GMU_SET_PA);
+-	aointr = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_AO_INTR_STATUS_PA);
+-	fence = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_AO_AHB_FENCE_PA);
++	cx = polaris_gmu_rd(gmu, POLARIS_GDSCR_CX_PA);
++	gx = polaris_gmu_rd(gmu, POLARIS_GDSCR_GX_PA);
++	sysreset = polaris_gmu_rd(gmu, POLARIS_GMU_CM3_SYSRESET_PA);
++	cfg = polaris_gmu_rd(gmu, POLARIS_GMU_CM3_CFG_PA);
++	counter = polaris_gmu_rd(gmu, POLARIS_GMU_PWR_COUNTER_PA);
++	info = polaris_gmu_rd(gmu, POLARIS_GMU_GMU2HOST_INFO_PA);
++	set = polaris_gmu_rd(gmu, POLARIS_GMU_HOST2GMU_SET_PA);
++	aointr = polaris_gmu_rd(gmu, POLARIS_GMU_AO_INTR_STATUS_PA);
++	fence = polaris_gmu_rd(gmu, POLARIS_GMU_AO_AHB_FENCE_PA);
+ 
+ 	printf("POLARIS GPU: m1 gdsc cx 0x%08x gx 0x%08x\n", cx, gx);
+ 	printf("POLARIS GPU: m1 gmu sysreset 0x%08x cfg 0x%08x counter 0x%08x\n",
