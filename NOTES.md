@@ -295,6 +295,17 @@ the host interrupt pair, all read-only. Two independent checks on the maths: `GX
 verdict table decides whether M1a (GMU firmware and HFI) is worth designing at all, or whether CX is off and
 the same missing vote closes this door too.
 
+**It is closed too, and by the same missing layer** (2026-11-23 22:35, 0115): `GDSCR cx 0x00222001 gx
+0x00222001` - bit0 set on both, i.e. both domains held in SW_COLLAPSE - and all six GMU registers read 0
+rather than 0xffffffff, so the bus answers but the domain has no power or clock. The GMU is therefore
+unreachable, and the reason is one level above where M0c stopped: CX comes up through the GDSC framework plus
+`cx.lvl`/`mx.lvl` RPMh votes, with PM8998 S9 as its upstream rail, and this port has neither a RPMh driver nor
+a GDSC owner - nor may it flip GDSCR by hand, which the contract forbids.
+
+Two routes, one root cause: no RPMh. GPU work on this port stops here, and the prerequisite is its own layer,
+larger than everything done today and gated on `pd`/TZ permission evidence. What the day did buy: nine reads
+settled both routes, which is cheaper and cleaner than the information M0b and M0c bought with writes.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

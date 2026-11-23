@@ -57,3 +57,41 @@ POLARIS GPU: m1 gmu sysreset 0x… cfg 0x… counter 0x…
 POLARIS GPU: m1 gmu intr info 0x… set 0x… ao 0x… fence 0x…
 POLARIS GPU: m1 verdict: …
 ```
+
+## 6. 实测结果（2026-11-23 22:35，`0115`）
+
+```
+POLARIS GPU: m1 gdsc cx 0x00222001 gx 0x00222001
+POLARIS GPU: m1 gmu sysreset 0x00000000 cfg 0x00000000 counter 0x00000000
+POLARIS GPU: m1 gmu intr info 0x00000000 set 0x00000000 ao 0x00000000 fence 0x00000000
+POLARIS GPU: m1 verdict: a GDSC is collapsed (cx bit0 1, gx bit0 1)
+```
+
+### 判读
+
+- `GDSCR` bit0 = 1 是 **SW_COLLAPSE**：两个域都被软件按在关断态。值 `0x00222001` 里
+  状态位 `[31:16] = 0x0022`，不是"上电完成"的样子。
+- GMU 六个寄存器全读 0，且**不是** `0xffffffff`：总线有应答，只是域没电/没时钟——
+  这和 CX 关断完全一致。
+- 因此 **GMU 现在无法访问**，`CM3_SYSRESET` 之类的复位状态读出来也没有意义（读的就是 0）。
+
+### 这条路也关了，而且和 PDC 是同一个原因
+
+CX 的上电在厂商路径里由 GDSC 框架 + `cx.lvl`/`mx.lvl` 的 **RPMh 投票**驱动，
+PM8998 S9 那条 PMIC 轨是它的上游。XNU 侧没有 RPMh driver、没有 GDSC 框架，
+契约文档也明确禁止"手工翻转 GDSCR 当作整体上电"。
+
+所以结论与 M0c 一致、但位置更靠前：
+
+| 层 | 状态 |
+|---|---|
+| PDC 请求 GX | 窗口可写、微码可装、请求无应答（缺 `gfx.lvl` 投票） |
+| GMU 固件/HFI | **不可达**：CX 域被按在关断（缺 GDSC 所有权 + `cx.lvl` 投票） |
+
+**GPU 在本项目范围内到此为止。** 想继续，前置条件是先在 XNU 里实现 RPMh 投票与
+GDSC 所有权——那是独立的一层，工作量大于今天所有工作之和，且需要 `pd`/TZ 的权限证据。
+
+### 保留的判断力
+
+一次只读探测（没有任何写入）就把两条路都定性了，代价只有一次上机。这正是"先读后写"
+在这个平台上的价值：M0b/M0c 用写入换来的信息，不如这次九次读取换来的干净。

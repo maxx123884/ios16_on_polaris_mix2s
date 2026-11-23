@@ -72,6 +72,9 @@ PG_TREE=../build/verify7 PG_FW=../build/fw-miui sh tools/run-gpu-host-tests.sh
   实测把 `RunStop` 提前也没有改变 `DEPCMD` 卡在 `CMDACT` 的现象。见 `NOTES.md` 的 0102/0104。
 - **连续无间隔地写 AOSS/PDC 寄存器会锁死总线**：同一条序列，微秒级连写会让 SoC 挂死
   （console ring 一个字都留不下），每笔之间留 1.3 s 就能完整跑完。见 `0111`。
+- **GMU 路线同样关闭**：CX 域的 `GDSCR` bit0 = 1（SW_COLLAPSE），GMU 六个寄存器全 0，
+  说明 GPU 复合体整体没电、GMU 不可访问。CX 上电要 GDSC 框架 + `cx.lvl`/`mx.lvl` 的 RPMh 投票，
+  前置是 PM8998 S9；XNU 侧两者皆无。见 [M1 可行性](<research/polaris/m1-gmu-feasibility.zh-CN.md>)。
 - **"下电成功"不能用 `RSC_STATUS0` bit16 判断**：GX 没上电时这一位天然为 1，属假阳性。
   只有在 `CONTROL_ACK` 曾经升起过之后才有意义。见 `0113`。
 
