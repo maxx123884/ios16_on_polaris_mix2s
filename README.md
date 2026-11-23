@@ -59,6 +59,22 @@ PG_TREE=../build/verify7 PG_FW=../build/fw-miui sh tools/run-gpu-host-tests.sh
 
 仓库不上传 Apple 镜像、Qualcomm 固件、设备转储、序列号或分区备份。对 `userdata` 写入会清除现有数据；新的临时启动与任何分区写入均须事先分别确认，保留 bootloader、recovery、modem、persist 和备份。
 
+### 已证伪的路径（别再从这儿开始）
+
+这些结论都来自真机，证据在对应文档里；写在这里是为了下次不必重走一遍。
+
+- **PDC 直连给 GX 上电**：窗口可写、微码可装、值可读回、TCS 完成、`CONTROL_REQ` 写入并回读，
+  但 `CONTROL_ACK` 的 bit1 从不到来，定序器也从未启动（请求前后 `SEQ_BUSY` 都是 0）。
+  缺的是 **RPMh 的 `gfx.lvl` 投票**——厂商是在 `rpmh_gpu_pwrctrl()` 投完票之后才调上电的。
+  XNU 侧没有 RPMh driver、没有 AOSS `cmd_db`，所以这条路在本项目范围内关闭。
+  见 [M0c §16](<research/polaris/m0c-pdc-ucode-load.zh-CN.md>)。
+- **"先配 ep0、后置 RunStop"是错的**：Linux `dwc3_gadget_soft_connect()` 的顺序正是这样，
+  实测把 `RunStop` 提前也没有改变 `DEPCMD` 卡在 `CMDACT` 的现象。见 `NOTES.md` 的 0102/0104。
+- **连续无间隔地写 AOSS/PDC 寄存器会锁死总线**：同一条序列，微秒级连写会让 SoC 挂死
+  （console ring 一个字都留不下），每笔之间留 1.3 s 就能完整跑完。见 `0111`。
+- **"下电成功"不能用 `RSC_STATUS0` bit16 判断**：GX 没上电时这一位天然为 1，属假阳性。
+  只有在 `CONTROL_ACK` 曾经升起过之后才有意义。见 `0113`。
+
 ## English
 
 ### Mi MIX 2S implementation (2026-10-23)
