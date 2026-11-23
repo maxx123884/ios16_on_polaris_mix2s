@@ -1,0 +1,100 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -876,6 +876,81 @@
+ #endif
+ 
+ /*
++ * M1a: what feeds the GPU from outside, before anything is switched on.
++ *
++ * The dipper port (same SDM845, same A630) walks its GPU up in numbered steps and
++ * warns in step 3 that GPUCC must not be touched until gcc_gpu_cfg_ahb_clk is
++ * confirmed running - an unclocked access can hang the bus, which is what this
++ * port already learned the hard way with the PDC sequencer. So step 1 reads the
++ * global clock controller, and step 2 reads GPUCC only if that clock is up.
++ *
++ * Register offsets follow that port's reading of Linux gcc-sdm845.c and
++ * gpucc-sdm845.c; the base addresses are the ones this port already has in the
++ * bring-up contract (GPUCC 0x05090000, length 0x9000).
++ */
++#define POLARIS_GPUCC_PA	0x05090000ULL	/* GPUCC/GFXCC shared block, contract section 1 */
++#define POLARIS_GPUCC_SIZE	0x00009000ULL
++#define POLARIS_GCC_PA		0x00100000ULL
++#define POLARIS_GCC_SIZE	0x001f0000ULL
++#define POLARIS_GCC_APPS_VOTE0	0x52004u	/* GPLL0 to the GPU sits in here */
++#define POLARIS_GCC_GPU_CFG_AHB	0x71004u
++#define POLARIS_GCC_GPU_MEMNOC	0x7100cu
++#define POLARIS_GCC_GPU_SNOC	0x71018u
++
++#define POLARIS_CBCR_OFF	(1u << 31)	/* branch clock: 1 means the branch is off */
++
++static uint32_t
++polaris_reg_rd(vm_offset_t base, uint32_t off)
++{
++	return *(volatile uint32_t *)(uintptr_t)(base + off);
++}
++
++static void
++polaris_gx_m1a(int step)
++{
++	vm_offset_t gcc, gpucc;
++	uint32_t cfg_ahb;
++
++	gcc = ml_io_map((vm_offset_t)POLARIS_GCC_PA, (vm_size_t)POLARIS_GCC_SIZE);
++	if (gcc == 0) {
++		printf("POLARIS GPU: m1a refused; GCC window map failed\n");
++		return;
++	}
++	cfg_ahb = polaris_reg_rd(gcc, POLARIS_GCC_GPU_CFG_AHB);
++	printf("POLARIS GPU: m1a gcc: apps_vote0 0x%08x cfg_ahb 0x%08x (%s) memnoc 0x%08x snoc 0x%08x\n",
++	    polaris_reg_rd(gcc, POLARIS_GCC_APPS_VOTE0), cfg_ahb,
++	    (cfg_ahb & POLARIS_CBCR_OFF) ? "OFF" : "running",
++	    polaris_reg_rd(gcc, POLARIS_GCC_GPU_MEMNOC),
++	    polaris_reg_rd(gcc, POLARIS_GCC_GPU_SNOC));
++
++	if (step < 2) {
++		return;
++	}
++	if ((cfg_ahb & POLARIS_CBCR_OFF) != 0) {
++		/* The warning this port has already paid for once. */
++		printf("POLARIS GPU: m1a stop: gcc_gpu_cfg_ahb_clk is off, GPUCC not read\n");
++		return;
++	}
++	gpucc = ml_io_map((vm_offset_t)POLARIS_GPUCC_PA, (vm_size_t)POLARIS_GPUCC_SIZE);
++	if (gpucc == 0) {
++		printf("POLARIS GPU: m1a refused; GPUCC window map failed\n");
++		return;
++	}
++	printf("POLARIS GPU: m1a gpucc: gx_gdscr 0x%08x (%s) cx_gdscr 0x%08x (%s)\n",
++	    polaris_reg_rd(gpucc, 0x100cu),
++	    (polaris_reg_rd(gpucc, 0x100cu) & 0x80000000u) ? "on" : "off",
++	    polaris_reg_rd(gpucc, 0x106cu),
++	    (polaris_reg_rd(gpucc, 0x106cu) & 0x80000000u) ? "on" : "off");
++	printf("POLARIS GPU: m1a gpucc: cx_gmu_cbcr 0x%08x cxo_cbcr 0x%08x rcg_cmd 0x%08x rcg_cfg 0x%08x\n",
++	    polaris_reg_rd(gpucc, 0x1098u), polaris_reg_rd(gpucc, 0x109cu),
++	    polaris_reg_rd(gpucc, 0x1120u), polaris_reg_rd(gpucc, 0x1124u));
++	printf("POLARIS GPU: m1a gpucc: cx_hw_ctrl 0x%08x (%s) gx_clamp 0x%08x\n",
++	    polaris_reg_rd(gpucc, 0x1540u),
++	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
++	    polaris_reg_rd(gpucc, 0x1508u));
++}
++
++/*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+  * No stages after the board stage have a backend in this revision.
+@@ -899,6 +974,15 @@
+ 			if (probe) {
+ 				polaris_gx_readonly_probe();
+ 			}
++			/* M1a: GCC and GPUCC reads, step-limited, its own opt-in. */
++			{
++				int m1a = 0;
++
++				PE_parse_boot_argn("polarisgxm1", &m1a, sizeof(m1a));
++				if (m1a >= 1) {
++					polaris_gx_m1a(m1a);
++				}
++			}
+ 			/* Read-only CPU liveness report, its own opt-in too. */
+ 			{
+ 				int cpu = 0;

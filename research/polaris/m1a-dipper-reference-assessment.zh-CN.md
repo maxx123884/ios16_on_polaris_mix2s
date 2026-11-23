@@ -93,3 +93,31 @@ GDSC 本身是 VOTABLE 的开关，写 `GDSCR` 清 `SW_COLLAPSE`、再轮询 `gd
 dipper-xnu 把"能不能在 XNU 上跑 A630"从猜想变成了已实现，并且它对我们最大的价值不是代码，而是
 **第 3、4 步那两句**：先确认 `GCC_GPU_CFG_AHB_CLK` 再碰 GPUCC；CX 是 VOTABLE 开关，清 `SW_COLLAPSE`
 就能开，状态看 `0x1540` bit31。我们的 M1 探针读到"Cx collapsed"就停了，而它告诉我们下一步该写什么。
+
+## 7. 已实现（0118，`polarisgxm1=1|2`）
+
+`0118-polaris-m1a-gcc-gpucc-read.patch`（只读，两个独立开关值）：
+
+- `polarisgxm1=1`：映射 GCC（`0x00100000`，长度 `0x1f0000`），读
+  `apps_vote0 (0x52004)`、`gpu_cfg_ahb (0x71004)`、`gpu_memnoc (0x7100c)`、`gpu_snoc (0x71018)`，
+  并对 `gpu_cfg_ahb` 打印 `running` / `OFF`（CBCR bit31 = 关）；
+- `polarisgxm1=2`：在上一步基础上，**仅当 `gpu_cfg_ahb` 显示 running 时**才映射 GPUCC
+  （`0x05090000`，`0x9000`）并读 GX/CX GDSCR（`0x100c`/`0x106c`）、`cx_gmu_cbcr`/`cxo_cbcr`
+  （`0x1098`/`0x109c`）、RCG CMD/CFG（`0x1120`/`0x1124`）、**CX GDSC hardware control（`0x1540`）**、
+  GX clamp（`0x1508`）。
+
+`0x1540` 正是我们上一次 M1 探针没读的那个寄存器——它是 CX 开关真正的状态位（bit31），
+dipper 的 `cx_wait()` 就是轮询它。`0x100c`/`0x106c` 与我们既有契约文档的 GDSCR 地址完全一致，
+说明两边地址表是同源的。
+
+预期输出：
+
+```
+POLARIS GPU: m1a gcc: apps_vote0 0x… cfg_ahb 0x… (running) memnoc 0x… snoc 0x…
+POLARIS GPU: m1a gpucc: gx_gdscr 0x… (off) cx_gdscr 0x… (off)
+POLARIS GPU: m1a gpucc: cx_gmu_cbcr 0x… cxo_cbcr 0x… rcg_cmd 0x… rcg_cfg 0x…
+POLARIS GPU: m1a gpucc: cx_hw_ctrl 0x… (not on) gx_clamp 0x…
+```
+
+判读要点：若 `cfg_ahb` 是 `OFF`，说明 GPUCC 现在连时钟都没有——那 CX 开关即使清 `SW_COLLAPSE`
+也开不起来（第 4 步会白写），得先解决 AHB 时钟归属，这是比 GDSC 更靠前的一层。
