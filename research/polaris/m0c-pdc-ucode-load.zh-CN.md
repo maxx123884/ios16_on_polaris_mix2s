@@ -116,3 +116,35 @@ REQ = 0
 1. 用户明确同意——这一步的风险等级高于 M0b（M0b 不可能上电，M0c 可能）；
 2. `0107` 之后的主机测试与 CI 全绿；
 3. 还原路径先写好并通过 host 测试（顺序、快照字段、失败分支），再谈触发路径。
+
+## 9. 已实现（0109，`polarisgxm0b=3`）
+
+`0109-polaris-gx-m0c-ucode-load.patch`（+227 行，只改 `bsd/dev/polaris_gpu.c`）：
+
+- `polarisgxm0b=3` 进入 M0c（`1`/`2` 仍是 M0b 的两级）；
+- **先自检再动手**：表里每个地址必须在两个窗口内、4 字节对齐，否则一行都不写；
+- **先快照**：36 个表项 + 5 个单独寄存器（`RSC_STATUS0`、`PDC_SLAVE_ID`、隐藏 TCS 的 addr/data、
+  `OVERRIDE_START`）全部读出来；
+- 按厂商顺序写：SDE 门控 → slave id → 隐藏 TCS 三组 → override → 十个微码字 + TCS1/TCS3 →
+  `PDC_GPU_SEQ_START_ADDR=0` → `PDC_GPU_ENABLE_PDC=0x80000001`；
+- 唤醒：`REQ=bit1`，各 100 ms 等 `ACK bit1` 与 `SEQ_BUSY==0`；
+- **无论唤醒成败都走下电**：`REQ=1`（bit0）→ 等 `RSC_STATUS0` bit16 → `REQ=0`；
+- **最后逐字还原**快照，并打印还原后的 `enable/ack/req/busy` 供比对。
+
+日志形状（设计里约定的成功形态）：
+
+```
+m0c pre: ack … req … busy … status0 … enable 0x00000000 pdcseq 0x00000000
+m0c loaded: enable 0x80000001 pdcseq 0xfebea1e1 rsccseq 0xa7a506a0
+m0c ack 0x00000002 after N ms
+m0c busy 0x00000000 after N ms
+m0c sleep status0 …bit16… after N ms
+m0c restored: enable 0x00000000 ack 0x00000000 req 0x00000000 busy 0x00000000
+m0c done: PDC ran, GX woke and went back to sleep
+```
+
+四种收尾：`done` / `no acknowledge` / `acknowledged but sequencer still busy` /
+`woke but did not sleep`。最后一种是 §5 判据表里"能上电、关不回去"的那一格，出现即停手。
+
+本地验证（不需要设备）：`-Weverything -Werror` 真头文件编译、主机 gate 7 场景、校验器全部断言、
+`PDC_GPU_ENABLE_PDC` 防漂移测试、aarch64-macos 交叉编译、哈希桩全部通过。

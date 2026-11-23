@@ -244,6 +244,13 @@ the registers we measured, is written up in `m0c-pdc-ucode-load.zh-CN.md`, toget
 handshake (REQ bit0 -> `RSC_STATUS0` bit16 -> REQ 0) and the rule that the ten ucode words are snapshotted,
 restored, and never left behind half-written.
 
+**0109 implements it as `polarisgxm0b=3`**: table self-check before anything, snapshot of the 36 table
+entries plus the five single registers, the vendor write order, the wake handshake (REQ bit1, 100 ms each for
+ACK and SEQ_BUSY), a power-down that runs whether or not the wake worked (REQ bit0 -> RSC_STATUS0 bit16 ->
+REQ 0), then the snapshot written back and re-read. Four endings: done, no acknowledge, acknowledged but
+sequencer busy, woke but did not sleep - the last one is the "we own power-on but not power-off" case that
+stops everything.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

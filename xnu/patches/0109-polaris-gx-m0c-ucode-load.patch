@@ -1,0 +1,227 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -463,6 +463,211 @@
+ }
+ 
+ /*
++ * M0c: load the sequencer ucode the bootloader leaves unwritten, so that
++ * CONTROL_REQ has something to run. Every value here is the vendor's, from
++ * _load_gmu_rpmh_ucode() in adreno_a6xx.c; every address is a6xx_reg.h offset
++ * converted with the two window rules this port already verified against
++ * measured registers (research/polaris/m0c-pdc-ucode-load.zh-CN.md section 3).
++ *
++ * The ten ucode words are opaque: this port transports them, it does not
++ * understand them. They are snapshotted before the write and restored after,
++ * because leaving a half-programmed sequencer behind is worse than not starting.
++ */
++struct polaris_m0c_write {
++	uint64_t pa;
++	uint32_t value;
++};
++
++static const struct polaris_m0c_write polaris_m0c_plan[] = {
++	/* GPU RSC sequencer ucode, five words */
++	{ 0x0508d600ULL, 0xa7a506a0u }, { 0x0508d604ULL, 0xa1e6a6e7u },
++	{ 0x0508d608ULL, 0xa2e081e1u }, { 0x0508d60cULL, 0xe9a982e2u },
++	{ 0x0508d610ULL, 0x0020e8a8u },
++	/* GPU PDC sequencer ucode, five words */
++	{ 0x0b480000ULL, 0xfebea1e1u }, { 0x0b480004ULL, 0xa5a4a3a2u },
++	{ 0x0b480008ULL, 0x8382a6e0u }, { 0x0b48000cULL, 0xbce3e284u },
++	{ 0x0b480010ULL, 0x002081fcu },
++	/* TCS1: low power entry */
++	{ 0x0b2855c8ULL, 0x0u }, { 0x0b2855ccULL, 0x7u }, { 0x0b2855d0ULL, 0x0u },
++	{ 0x0b2855d4ULL, 0x10108u }, { 0x0b2855d8ULL, 0x30010u }, { 0x0b2855dcULL, 0x1u },
++	{ 0x0b2855e4ULL, 0x10108u }, { 0x0b2855e8ULL, 0x30000u }, { 0x0b2855ecULL, 0x0u },
++	{ 0x0b2855f4ULL, 0x10108u }, { 0x0b2855f8ULL, 0x30080u }, { 0x0b2855fcULL, 0x0u },
++	/* TCS3: power collapse */
++	{ 0x0b285758ULL, 0x0u }, { 0x0b28575cULL, 0x7u }, { 0x0b285760ULL, 0x0u },
++	{ 0x0b285764ULL, 0x10108u }, { 0x0b285768ULL, 0x30010u }, { 0x0b28576cULL, 0x2u },
++	{ 0x0b285774ULL, 0x10108u }, { 0x0b285778ULL, 0x30000u }, { 0x0b28577cULL, 0x3u },
++	{ 0x0b285784ULL, 0x10108u }, { 0x0b285788ULL, 0x30080u }, { 0x0b28578cULL, 0x3u },
++	/* PDC entry point, then the enable - 0x80000001, not 0x1 */
++	{ 0x0b284520ULL, 0x0u },
++	{ 0x0b284500ULL, 0x80000001u },
++};
++
++/* The handful of writes the vendor does outside that table, in its order. */
++#define POLARIS_RSC_STATUS0_PA		0x0508d010ULL	/* |= BIT(24) */
++#define POLARIS_RSC_STATUS0_BIT		24u
++#define POLARIS_PDC_SLAVE_ID_PA		0x0508d02cULL	/* = 1 */
++#define POLARIS_HIDDEN_TCS_ADDR_PA	0x0508d034ULL	/* +0, +8, +16 */
++#define POLARIS_HIDDEN_TCS_DATA_PA	0x0508d038ULL	/* +0, +8, +16 */
++#define POLARIS_OVERRIDE_START_PA	0x0508d400ULL	/* = 0 */
++#define POLARIS_REQ_PA			0x0508ec1cULL
++#define POLARIS_ACK_PA			0x0508ec20ULL
++#define POLARIS_SEQ_BUSY_PA		0x0508d404ULL
++#define POLARIS_M0C_WAIT_MS		100u
++
++static uint32_t *
++polaris_m0c_word(vm_offset_t gmu, vm_offset_t pdc, uint64_t pa)
++{
++	if (pa >= POLARIS_PDC_PA) {
++		return (uint32_t *)(uintptr_t)(pdc + (pa - POLARIS_PDC_PA));
++	}
++	return (uint32_t *)(uintptr_t)(gmu + (pa - POLARIS_GMU_PA));
++}
++
++static void
++polaris_gx_m0c(void)
++{
++	vm_offset_t gmu, pdc;
++	volatile uint32_t *req, *ack, *busy, *status0;
++	static uint32_t snapshot[sizeof(polaris_m0c_plan) / sizeof(polaris_m0c_plan[0])];
++	uint32_t singles[5];
++	size_t i, words = sizeof(polaris_m0c_plan) / sizeof(polaris_m0c_plan[0]);
++	bool acked = false, idle = false, slept = false;
++
++	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	pdc = ml_io_map((vm_offset_t)POLARIS_PDC_PA, (vm_size_t)POLARIS_PDC_SIZE);
++	if (gmu == 0 || pdc == 0) {
++		printf("POLARIS GPU: m0c refused; window map failed\n");
++		return;
++	}
++
++	/* Refuse before touching anything if a table entry is outside its window. */
++	for (i = 0; i < words; i++) {
++		if (!polaris_gx_in_window(polaris_m0c_plan[i].pa) ||
++		    (polaris_m0c_plan[i].pa & 0x3) != 0) {
++			printf("POLARIS GPU: m0c refused; table entry %u outside the two windows\n",
++			    (unsigned)i);
++			return;
++		}
++	}
++
++	req = polaris_m0c_word(gmu, pdc, POLARIS_REQ_PA);
++	ack = polaris_m0c_word(gmu, pdc, POLARIS_ACK_PA);
++	busy = polaris_m0c_word(gmu, pdc, POLARIS_SEQ_BUSY_PA);
++	status0 = polaris_m0c_word(gmu, pdc, POLARIS_RSC_STATUS0_PA);
++
++	/* Snapshot everything this is about to change, before changing any of it. */
++	for (i = 0; i < words; i++) {
++		snapshot[i] = *polaris_m0c_word(gmu, pdc, polaris_m0c_plan[i].pa);
++	}
++	singles[0] = *status0;
++	singles[1] = *polaris_m0c_word(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA);
++	singles[2] = *polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA);
++	singles[3] = *polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA);
++	singles[4] = *polaris_m0c_word(gmu, pdc, POLARIS_OVERRIDE_START_PA);
++	printf("POLARIS GPU: m0c pre: ack 0x%08x req 0x%08x busy 0x%08x status0 0x%08x enable 0x%08x pdcseq 0x%08x\n",
++	    *ack, *req, *busy, *status0,
++	    *polaris_m0c_word(gmu, pdc, 0x0b284500ULL),
++	    *polaris_m0c_word(gmu, pdc, 0x0b480000ULL));
++
++	/* The vendor's order: SDE gate, slave id, hidden TCS, override, then ucode. */
++	*status0 = singles[0] | (1u << POLARIS_RSC_STATUS0_BIT);
++	*polaris_m0c_word(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA) = 1u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA) = 0u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA) = 0u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA + 8) = 0u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA + 8) = 0u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA + 16) = 0x80000000u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA + 16) = 0u;
++	*polaris_m0c_word(gmu, pdc, POLARIS_OVERRIDE_START_PA) = 0u;
++
++	for (i = 0; i < words; i++) {
++		*polaris_m0c_word(gmu, pdc, polaris_m0c_plan[i].pa) = polaris_m0c_plan[i].value;
++	}
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: m0c loaded: enable 0x%08x pdcseq 0x%08x rsccseq 0x%08x\n",
++	    *polaris_m0c_word(gmu, pdc, 0x0b284500ULL),
++	    *polaris_m0c_word(gmu, pdc, 0x0b480000ULL),
++	    *polaris_m0c_word(gmu, pdc, 0x0508d600ULL));
++
++	/* Wake request, then the vendor's two waits. */
++	*req = PG_GX_BIT_ON;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	for (i = 0; i < POLARIS_M0C_WAIT_MS; i++) {
++		delay(1000);
++		if ((*ack & PG_GX_BIT_ON) != 0) {
++			acked = true;
++			break;
++		}
++	}
++	printf("POLARIS GPU: m0c ack 0x%08x after %u ms\n", *ack, (unsigned)(i + 1));
++	if (acked) {
++		for (i = 0; i < POLARIS_M0C_WAIT_MS; i++) {
++			delay(1000);
++			if (*busy == 0u) {
++				idle = true;
++				break;
++			}
++		}
++		printf("POLARIS GPU: m0c busy 0x%08x after %u ms\n", *busy, (unsigned)(i + 1));
++	}
++
++	/*
++	 * Power back down the vendor's way (a6xx_rpmh_power_off_gpu): REQ bit0 is
++	 * the sleep request, and RSC_STATUS0 bit16 says the rail came down. This
++	 * runs whether or not the wake worked, because a half-woken domain is not
++	 * a state this port may leave behind.
++	 */
++	*req = 1u;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	for (i = 0; i < POLARIS_M0C_WAIT_MS; i++) {
++		delay(1000);
++		if ((*status0 & (1u << 16)) != 0) {
++			slept = true;
++			break;
++		}
++	}
++	printf("POLARIS GPU: m0c sleep status0 0x%08x after %u ms\n", *status0, (unsigned)(i + 1));
++	*req = 0u;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++
++	/* Restore: ucode and TCS banks go back exactly as they were found. */
++	for (i = 0; i < words; i++) {
++		*polaris_m0c_word(gmu, pdc, polaris_m0c_plan[i].pa) = snapshot[i];
++	}
++	*status0 = singles[0];
++	*polaris_m0c_word(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA) = singles[1];
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA) = singles[2];
++	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA) = singles[3];
++	*polaris_m0c_word(gmu, pdc, POLARIS_OVERRIDE_START_PA) = singles[4];
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: m0c restored: enable 0x%08x ack 0x%08x req 0x%08x busy 0x%08x\n",
++	    *polaris_m0c_word(gmu, pdc, 0x0b284500ULL), *ack, *req, *busy);
++
++	if (acked && idle && slept) {
++		printf("POLARIS GPU: m0c done: PDC ran, GX woke and went back to sleep\n");
++	} else if (!acked) {
++		printf("POLARIS GPU: m0c quarantined: ucode loaded, no acknowledge\n");
++	} else if (!idle) {
++		printf("POLARIS GPU: m0c quarantined: acknowledged but sequencer still busy\n");
++	} else {
++		printf("POLARIS GPU: m0c quarantined: woke but did not sleep\n");
++	}
++	/* No unmap: same reason as the probe and M0b. */
++}
++
++/* Filled by polaris_gx_readonly_probe(); read by the decision and by M0b. */
++
++/*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+  * No stages after the board stage have a backend in this revision.
+@@ -490,7 +695,11 @@
+ 			PE_parse_boot_argn("polarisgxm0b", &m0b, sizeof(m0b));
+ 			if (probe && m0b >= 1 && polaris_gx_last_valid &&
+ 			    pg_gx_decide(&polaris_gx_last) == PG_GX_WRITE_REQ) {
+-				polaris_gx_m0b((unsigned int)m0b);
++				if (m0b >= 3) {
++					polaris_gx_m0c();
++				} else {
++					polaris_gx_m0b((unsigned int)m0b);
++				}
+ 			}
+ 		}
+ 		printf("POLARIS GPU: %s backend not implemented; no hardware access\n",
