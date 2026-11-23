@@ -121,3 +121,30 @@ POLARIS GPU: m1a gpucc: cx_hw_ctrl 0x… (not on) gx_clamp 0x…
 
 判读要点：若 `cfg_ahb` 是 `OFF`，说明 GPUCC 现在连时钟都没有——那 CX 开关即使清 `SW_COLLAPSE`
 也开不起来（第 4 步会白写），得先解决 AHB 时钟归属，这是比 GDSC 更靠前的一层。
+
+## 8. 实测（2026-11-24 00:56，`polarisgxm1=2`）
+
+```
+POLARIS GPU: m1a gcc: apps_vote0 0x01601d7b cfg_ahb 0x00000001 (running) memnoc 0x80004220 snoc 0x80000001
+POLARIS GPU: m1a gpucc: gx_gdscr 0x00222001 (off) cx_gdscr 0x00222001 (off)
+POLARIS GPU: m1a gpucc: cx_gmu_cbcr 0x80004220 cxo_cbcr 0x80000001 rcg_cmd 0x80000000 rcg_cfg 0x00000000
+POLARIS GPU: m1a gpucc: cx_hw_ctrl 0x00005ff4 (not on) gx_clamp 0x00000001
+```
+
+| 观察 | 值 | 判读 |
+|---|---|---|
+| `gcc_gpu_cfg_ahb_clk` | `0x00000001`（bit31=0） | **在跑**：可以安全访问 GPUCC，dipper 的硬前提成立 |
+| `apps_vote0` | `0x01601d7b` | bit15 = 1：GPLL0 已投给 GPU |
+| `gpu_memnoc_gfx` | `0x80004220` | bit31 = 1：**分支关** |
+| `gpu_snoc_dvm_gfx` | `0x80000001` | bit31 = 1：**分支关** |
+| `cx_gmu_clk` | `0x80004220` | bit31 = 1：**关** |
+| `cxo_clk` | `0x80000001` | bit31 = 1：**关** |
+| GMU 时钟源 RCG | `0x80000000` / `0x00000000` | root 处于 `ROOT_OFF` |
+| `CX GDSC hw_ctrl` | `0x00005ff4`（bit31=0） | CX 未上电，与 `cx_gdscr` bit0=1 一致 |
+| `GX clamp` | `0x00000001` | 有 clamp 位在位（待第 4 步后复核） |
+
+结论：**GPU 复合体完全停着，且没有任何异常**——时钟全关、两个域都 collapsed、AHB 时钟却是在跑的。
+这正是"可以安全地开始上电"的干净起点，也是第一次可以真写 GPUCC 的时机。
+
+注意 `m1a gpucc` 能读出来本身就是证据：dipper 的警告（未开 AHB 时钟访问会挂总线）在我们这里不成立，
+因为 `cfg_ahb` 是 running。反过来说，如果它当时是 OFF，这三行读就会变成一次挂死。
