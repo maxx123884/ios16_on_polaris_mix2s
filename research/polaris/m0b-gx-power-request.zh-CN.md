@@ -128,3 +128,33 @@ POLARIS GPU: m0b done: request/ack/clear closed, GX back to off
 
 **注意 §7 的第一条仍在**：`PDC_GPU_ENABLE` bit0 当前是 0。若真机上 ACK 不动，日志会明确提示
 那一点，那时才讨论对 `PDC_GPU_ENABLE` 做同样"一位、可逆、有回读"的写。
+
+## 10. 第一次真机结果（2026-11-23 14:31，`polarisgxm0b=1`）
+
+```
+POLARIS GPU: m0b pre: ack 0x00000000 req 0x00000000 busy 0x00000000 pdc 0x00000000 seq 0x00004520
+POLARIS GPU: m0b set req 0x00000000 -> 0x00000002
+POLARIS GPU: m0b ack 0x00000000 after 21 ms
+POLARIS GPU: m0b post: ack 0x00000000 req 0x00000002
+POLARIS GPU: m0b cleared req -> 0x00000000
+POLARIS GPU: m0b ack 0x00000000 after 1 ms
+POLARIS GPU: m0b quarantined: no acknowledge; check PDC_GPU_ENABLE bit0
+```
+
+判读：
+
+- **写入生效**：`req` 回读 `0x00000002`，撤销后回 `0`——GMU 窗口可写、这一位可逆；
+- **ACK 在 21 ms 内没有跟随**，撤销后仍是 0，说明**没有任何东西**在跑（既没上电，也没留残余）；
+- 整机照常进入 iOS 用户态——**这一位在启动早期写是安全的**；
+- 落在判据表第二种：REQ 到位、执行者没动。而 `pdc` 那一栏在 pre 快照里是 `0x00000000`，正是
+  §7 预先记下的 `PDC_GPU_ENABLE` bit0 = 0。
+
+## 11. 第二级：先使能 PDC（0107，`polarisgxm0b=2`）
+
+`0107` 给 M0b 加了 `mode 2`：先写 `PDC_GPU_ENABLE` bit0，再写 REQ；两级都撤销。
+
+关键在于多了一道**自保护读**：**使能 PDC 之后、写 REQ 之前**再读一次 ACK。如果 ACK 自己变 1，
+说明"开 PDC 就等于上电"，那是另一种契约——立刻把 PDC 位恢复并报
+`enabling PDC alone powered GX; restored`，不再往下做。
+
+`mode 1` 在那台机器上已证明请求送得到、没人执行，所以这一步是顺着证据走的，不是猜。

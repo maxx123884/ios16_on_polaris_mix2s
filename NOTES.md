@@ -217,6 +217,13 @@ stage). `dsb sy` is emitted for aarch64 only, so the host harness compiles it. V
 `-Weverything -Werror` against the real headers, the 7 gate scenarios, every validator assertion, the
 aarch64-macos cross-compile and the hash harness - `tools/gate/kernel.c` gained a `delay()` stub for it.
 
+**M0b ran on the phone** (2026-11-23 14:31, `polarisgxm0b=1`): `req` read back as `0x00000002`, `CONTROL_ACK`
+stayed `0x00000000` for 21 ms and stayed 0 after the request was withdrawn, and the phone reached iOS as
+usual. So the GMU window is writable, that bit is reversible, and nothing acts on the request - the
+`PDC_GPU_ENABLE` bit0 = 0 that the design had already flagged. `0107` adds `polarisgxm0b=2`: enable PDC
+first, then request, with a self-protecting read between them - if the acknowledge rises while PDC is enabled
+and no request is pending, enabling PDC is itself a power-on, and the bit is restored immediately.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

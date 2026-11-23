@@ -1,0 +1,102 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -221,6 +221,13 @@
+ 	{ "GMU_RSCC_CONTROL_ACK",    0x0508ec20ULL,  1 },
+ };
+ 
++/*
++ * polarisgxm0b=1 asks the PDC for GX power; =2 first enables the PDC itself
++ * (bit0 of PDC_GPU_ENABLE), because =1 on the phone showed the request landing
++ * and nothing acting on it.
++ */
++#define POLARIS_PDC_ENABLE_PA	0x0b284500ULL
++
+ /* Filled by polaris_gx_readonly_probe(); read by the decision and by M0b. */
+ static struct pg_gx_state polaris_gx_last;
+ static bool polaris_gx_last_valid;
+@@ -337,12 +344,12 @@
+ #define POLARIS_M0B_WAIT_MS	20u
+ 
+ static void
+-polaris_gx_m0b(void)
++polaris_gx_m0b(unsigned int mode)
+ {
+-	vm_offset_t gmu;
+-	volatile uint32_t *req, *ack;
+-	uint32_t before, i;
+-	bool acked = false, cleared = false;
++	vm_offset_t gmu, pdc = 0;
++	volatile uint32_t *req, *ack, *enable = NULL;
++	uint32_t before, pdc_before = 0, i;
++	bool acked = false, cleared = false, pdc_owned = false;
+ 
+ 	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
+ 	if (gmu == 0) {
+@@ -359,6 +366,40 @@
+ 	    polaris_gx_last.seq_busy, polaris_gx_last.pdc_enable,
+ 	    polaris_gx_last.seq_start);
+ 
++	/*
++	 * Mode 2 also enables the PDC itself (bit0 of PDC_GPU_ENABLE), because
++	 * mode 1 proved the request is delivered and nothing acts on it. The
++	 * acknowledge is read again the moment PDC is enabled: if it rises by
++	 * itself, enabling the PDC is enough to power GX, and that is a different
++	 * contract than the one this experiment assumes - restore and stop.
++	 */
++	if (mode >= 2) {
++		pdc = ml_io_map((vm_offset_t)POLARIS_PDC_PA, (vm_size_t)POLARIS_PDC_SIZE);
++		if (pdc == 0) {
++			printf("POLARIS GPU: m0b refused; PDC window map failed\n");
++			return;
++		}
++		enable = (volatile uint32_t *)(uintptr_t)(pdc +
++		    (POLARIS_PDC_ENABLE_PA - POLARIS_PDC_PA));
++		pdc_before = *enable;
++		*enable = pdc_before | 1u;
++#if defined(__aarch64__)
++		__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++		pdc_owned = true;
++		printf("POLARIS GPU: m0b pdc enable 0x%08x -> 0x%08x\n", pdc_before, *enable);
++		delay(1000);
++		printf("POLARIS GPU: m0b pdc post: ack 0x%08x (must still be 0)\n", *ack);
++		if ((*ack & PG_GX_BIT_ON) != 0) {
++			*enable = pdc_before;
++#if defined(__aarch64__)
++			__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++			printf("POLARIS GPU: m0b quarantined: enabling PDC alone powered GX; restored\n");
++			return;
++		}
++	}
++
+ 	before = *req;
+ 	*req = before | PG_GX_BIT_ON;
+ #if defined(__aarch64__)
+@@ -395,6 +436,14 @@
+ 	}
+ 	printf("POLARIS GPU: m0b ack 0x%08x after %u ms\n", *ack, (unsigned)(i + 1));
+ 
++	if (pdc_owned) {
++		*enable = pdc_before;
++#if defined(__aarch64__)
++		__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++		printf("POLARIS GPU: m0b pdc restored -> 0x%08x\n", *enable);
++	}
++
+ 	if (acked && cleared) {
+ 		printf("POLARIS GPU: m0b done: request/ack/clear closed, GX back to off\n");
+ 	} else if (!acked) {
+@@ -431,9 +480,9 @@
+ 			}
+ 			/* The write has its own switch: probing must never cause one. */
+ 			PE_parse_boot_argn("polarisgxm0b", &m0b, sizeof(m0b));
+-			if (probe && m0b && polaris_gx_last_valid &&
++			if (probe && m0b >= 1 && polaris_gx_last_valid &&
+ 			    pg_gx_decide(&polaris_gx_last) == PG_GX_WRITE_REQ) {
+-				polaris_gx_m0b();
++				polaris_gx_m0b((unsigned int)m0b);
+ 			}
+ 		}
+ 		printf("POLARIS GPU: %s backend not implemented; no hardware access\n",
