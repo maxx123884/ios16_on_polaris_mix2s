@@ -1,0 +1,115 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -905,6 +905,101 @@
+ 	return *(volatile uint32_t *)(uintptr_t)(base + off);
+ }
+ 
++/*
++ * M1a step 3: close the CX power switch, the way Linux's gdsc.c does it for
++ * gpu_cx_gdsc (VOTABLE): set the clock-disable wait in GDSCR, clear SW_COLLAPSE,
++ * then wait for the power-on bit in the hardware-control register. The dipper
++ * port does exactly this and reads the same two registers.
++ *
++ * Reversible on purpose: the GDSCR value is snapshotted and written back, and the
++ * hardware-control bit is re-read to confirm the switch fell again. A switch that
++ * goes on and will not come off is the outcome that ends the GPU line here.
++ */
++#define POLARIS_GPUCC_CX_GDSCR		0x106cu
++#define POLARIS_GPUCC_CX_HWCTRL		0x1540u
++#define POLARIS_GDSCR_SW_COLLAPSE	(1u << 0)
++#define POLARIS_GDSCR_CLK_DIS_WAIT	(0xfu << 12)
++#define POLARIS_CX_CLK_DIS_WAIT_VAL	8u	/* qcom,clk-dis-wait-val of the GPU CC node */
++#define POLARIS_GDSC_PWR_ON		(1u << 31)
++#define POLARIS_GDSC_POLL_US		2000u
++
++static void
++polaris_reg_wr(vm_offset_t base, uint32_t off, uint32_t value)
++{
++	*(volatile uint32_t *)(uintptr_t)(base + off) = value;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++}
++
++static bool
++polaris_cx_wait(vm_offset_t gpucc, bool on)
++{
++	uint32_t waited;
++
++	for (waited = 0; waited <= POLARIS_GDSC_POLL_US; waited += 10) {
++		bool now = (polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL) & POLARIS_GDSC_PWR_ON) != 0;
++
++		if (now == on) {
++			return true;
++		}
++		delay(10);
++	}
++	return false;
++}
++
++static void
++polaris_gx_m1a_cx(vm_offset_t gpucc)
++{
++	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
++	uint32_t v;
++	bool on;
++
++	printf("POLARIS GPU: m1a cx before: gdscr 0x%08x hw_ctrl 0x%08x\n",
++	    before, polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL));
++	if ((polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL) & POLARIS_GDSC_PWR_ON) != 0) {
++		printf("POLARIS GPU: m1a cx: already powered on, not touched\n");
++		return;
++	}
++
++	/* gdsc_init(): program the clock-disable wait, then toggle the switch on. */
++	v = before & ~POLARIS_GDSCR_CLK_DIS_WAIT;
++	printf("POLARIS GPU: m1a cx write gdscr 0x%08x (clk-dis-wait %u)\n",
++	    v | (POLARIS_CX_CLK_DIS_WAIT_VAL << 12), POLARIS_CX_CLK_DIS_WAIT_VAL);
++	delay(1300000);	/* let the ring keep the line before the store */
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GDSCR,
++	    v | (POLARIS_CX_CLK_DIS_WAIT_VAL << 12));
++
++	v = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
++	printf("POLARIS GPU: m1a cx write gdscr 0x%08x (collapse cleared)\n",
++	    v & ~POLARIS_GDSCR_SW_COLLAPSE);
++	delay(1300000);
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GDSCR, v & ~POLARIS_GDSCR_SW_COLLAPSE);
++
++	delay(1);
++	on = polaris_cx_wait(gpucc, true);
++	printf("POLARIS GPU: m1a cx after: gdscr 0x%08x hw_ctrl 0x%08x: %s\n",
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR),
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL),
++	    on ? "power ON" : "STILL OFF after 2 ms");
++
++	/* Put it back: this step answers a question, it does not keep a domain on. */
++	printf("POLARIS GPU: m1a cx restore gdscr 0x%08x\n", before);
++	delay(1300000);
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GDSCR, before);
++	delay(1);
++	if (on) {
++		bool off = polaris_cx_wait(gpucc, false);
++
++		printf("POLARIS GPU: m1a cx restored: hw_ctrl 0x%08x: %s\n",
++		    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL),
++		    off ? "switch fell again" : "STILL ON - we own power-on but not power-off");
++	} else {
++		printf("POLARIS GPU: m1a cx restored: hw_ctrl 0x%08x (never went on)\n",
++		    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL));
++	}
++}
++
+ static void
+ polaris_gx_m1a(int step)
+ {
+@@ -948,6 +1043,10 @@
+ 	    polaris_reg_rd(gpucc, 0x1540u),
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
++
++	if (step >= 3) {
++		polaris_gx_m1a_cx(gpucc);
++	}
+ }
+ 
+ /*

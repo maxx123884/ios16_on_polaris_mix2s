@@ -148,3 +148,32 @@ POLARIS GPU: m1a gpucc: cx_hw_ctrl 0x00005ff4 (not on) gx_clamp 0x00000001
 
 注意 `m1a gpucc` 能读出来本身就是证据：dipper 的警告（未开 AHB 时钟访问会挂总线）在我们这里不成立，
 因为 `cfg_ahb` 是 running。反过来说，如果它当时是 OFF，这三行读就会变成一次挂死。
+
+## 9. 0119：拨 CX 开关（`polarisgxm1=3`）
+
+第一次写 GPUCC，动作与 dipper 的 `step_cx_on` 一致：
+
+```
+读 cx_gdscr（快照）+ 读 cx_hw_ctrl（必须 bit31 = 0，否则"已上电，不动"）
+写 cx_gdscr = (原值 & ~0xf000) | (8 << 12)          ← qcom,clk-dis-wait-val = 8
+写 cx_gdscr = 上面的值 & ~1                          ← 清 SW_COLLAPSE
+睡 1 µs，轮询 cx_hw_ctrl bit31，最多 2 ms（10 µs 一步）
+打印 ON / STILL OFF，并把 cx_gdscr 写回快照
+若曾经 ON：再轮询 bit31 是否回 0
+```
+
+两笔写之前各插 1.3 s 等日志落盘（M0c 的教训），所以这一段会慢约 5 秒。
+
+**可逆性**：无论结果如何都写回快照；并显式检查"关得回去"。出现
+`STILL ON - we own power-on but not power-off` 即按判据停手，不再做第 4 步。
+
+预期输出：
+
+```
+m1a cx before: gdscr 0x00222001 hw_ctrl 0x00005ff4
+m1a cx write gdscr 0x00228001 (clk-dis-wait 8)
+m1a cx write gdscr 0x00228000 (collapse cleared)
+m1a cx after:  gdscr 0x00228000 hw_ctrl 0x8……: power ON
+m1a cx restore gdscr 0x00222001
+m1a cx restored: hw_ctrl 0x00005ff4: switch fell again
+```
