@@ -196,3 +196,43 @@ delay(1.3 s)          ← 让日志线程把这一行写进 userdata
 
 同时加了 `polarisgxm0csteps=N`：只执行前 N 笔写，用于进一步缩范围。
 代价是整轮 m0c 会慢约 50 秒（40 笔 × 1.3 s），在 bring-up 阶段可以接受。
+
+## 13. 第二次上机：序列跑通、仍未上电（2026-11-23 20:33，`0111` 节奏版）
+
+逐笔写全部成功，回读正确；握手失败，并留下一个副作用：
+
+```
+m0c pre: ack 0x00000000 req 0x00000000 busy 0x00000000 status0 0x00000000
+       enable 0x00000000 pdcseq 0x00000000            ← 微码确实是空的
+m0c write 0x0508d034 = 0x00000000 (was 0x82204514)     ← 隐藏 TCS 里原本是 0x4514/0x4510/0x4520
+m0c write 0x0508d600 = 0xa7a506a0 (was 0x00000000)     ← RSC 微码为空，证实 bootloader 未写
+m0c write 0x0b480000 = 0xfebea1e1 (was 0x00000000)     ← PDC 微码为空
+m0c write 0x0b284500 = 0x80000001 (was 0x00000000)     ← PDC 使能
+m0c loaded: enable 0x80000001 pdcseq 0xfebea1e1 rsccseq 0xa7a506a0   ← 全部写入并回读一致
+m0c ack 0x00000000 after 101 ms                        ← ACK bit1 仍不来
+m0c sleep status0 0x01010006 after 1 ms                ← 假阳性：bit16 一开始就是 1
+m0c restored: enable 0x00000000 ack 0x00000001 req 0x00000000 busy 0x00000001
+m0c quarantined: ucode loaded, no acknowledge
+```
+
+### 三个新事实
+
+1. **之前两次"挂死"是写入节奏问题**：40 笔写挤在微秒级会锁死 AOSS 总线；每笔间隔 1.3 s 后，
+   同一条序列完整跑完。这是**继续做 PDC 工作的前提条件**，也是本设计没预料到的一条。
+2. **窗口完全可写、值留得住**：三处微码与使能位都回读一致——不存在"PDC 窗口不可写"这回事。
+3. **定序器被点着了，但 GX 没上电**：`busy` 0→1、`ack` bit0 0→1，说明请求被受理、有东西开始跑，
+   而 `ack` bit1（GX 上电确认）始终为 0。同时**我们把 `RSCC_SEQ_BUSY_DRV0` 留在 1**——按 §5
+   判据这属于"定序器仍在跑"，本应立即停手并隔离，当前实现只是打印了 quarantine，没有阻止还原。
+
+### 判据的缺陷（下个补丁要修）
+
+- `sleep status0` 必须在 **ACK 曾经升起过** 的前提下才有意义；否则 `status0` bit16 天然为 1，
+  会打印出假的"下电成功"。
+- `busy != 0` 之后**不应该**继续把微码清零（等于把正在跑的程序抽掉）；应停在原地报告。
+
+### 下一步要问的问题
+
+既然请求被受理、定序器开跑，缺的可能是 PDC 序列**执行所需的前置**（AOSS 时钟、或 `PDC_GPU_ENABLE`
+的 bit31 语义之外的东西），也可能是 `REQ` 的触发方式（RSC 走的是 RPMh 命令而不是这一位）。
+下一步应当是**读而不是写**：`RSCC_TCS0..3_DRV0_STATUS`（0x0508dd18 起）与 `RSC_STATUS0` 的其它位，
+看定序器卡在哪个 TCS 上——读不会改变状态，风险远低于再写。

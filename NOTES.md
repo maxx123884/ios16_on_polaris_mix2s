@@ -261,6 +261,17 @@ inference. The phone recovered with power+volume-down and iOS booted normally, s
 `0110` announces every write through kprintf, which also draws on the framebuffer: the last line visible on
 the screen names the write that stopped it, so one boot and one photo locate it - no bisection rounds.
 
+**With pacing it ran, and the picture is much better than "hung"** (2026-11-23 20:33, 0111): forty timed writes
+all landed and read back (`enable 0x80000001`, `pdcseq 0xfebea1e1`, `rsccseq 0xa7a506a0`), which retires the
+"PDC window is unwritable" theory and suggests the two earlier dead boots were the un-paced burst locking the
+AOSS bus, not the code being wrong. The wake still failed - `CONTROL_ACK` bit1 stayed 0 through 101 ms - and
+two side effects showed up: `RSCC_SEQ_BUSY_DRV0` went 0 -> 1 (something did start) and `CONTROL_ACK` bit0 went
+0 -> 1. So the request is accepted and a sequencer runs, but GX never powers. Also found: the `sleep status0`
+line was a false positive (bit16 is 1 whenever GX is off, so "powered down" proves nothing unless the
+acknowledge had risen first), and the restore path clear the ucode even while `SEQ_BUSY` was 1 - both need
+fixing before the next write. The next step is reads, not writes: the `RSCC_TCS0..3_DRV0_STATUS` block to see
+which TCS the sequencer is stuck on.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
