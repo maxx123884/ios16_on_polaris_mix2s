@@ -1,0 +1,88 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -513,6 +513,10 @@
+ #define POLARIS_ACK_PA			0x0508ec20ULL
+ #define POLARIS_SEQ_BUSY_PA		0x0508d404ULL
+ #define POLARIS_M0C_WAIT_MS		100u
++/* RSCC_TCS{0,1,3}_DRV0_STATUS, converted from their a6xx_reg.h indices. */
++#define POLARIS_TCS0_STATUS_PA		0x0508dd18ULL	/* index 0x23746 */
++#define POLARIS_TCS1_STATUS_PA		0x0508e2b8ULL	/* index 0x238AE */
++#define POLARIS_TCS3_STATUS_PA		0x050907f8ULL	/* index 0x23B7E */
+ 
+ static uint32_t *
+ polaris_m0c_word(vm_offset_t gmu, vm_offset_t pdc, uint64_t pa)
+@@ -539,6 +543,22 @@
+ 
+ static int polaris_m0c_steps_left = -1;	/* -1: no limit, else remaining writes */
+ 
++/*
++ * Read-only: which TCS the sequencer is on. Reads cannot change state, so this
++ * is what M0c asks once the acknowledge fails to arrive.
++ */
++static void
++polaris_m0c_tcs(const char *when, vm_offset_t gmu, vm_offset_t pdc)
++{
++	printf("POLARIS GPU: m0c tcs %s: tcs0 0x%08x tcs1 0x%08x tcs3 0x%08x busy 0x%08x status0 0x%08x\n",
++	    when,
++	    *polaris_m0c_word(gmu, pdc, POLARIS_TCS0_STATUS_PA),
++	    *polaris_m0c_word(gmu, pdc, POLARIS_TCS1_STATUS_PA),
++	    *polaris_m0c_word(gmu, pdc, POLARIS_TCS3_STATUS_PA),
++	    *polaris_m0c_word(gmu, pdc, POLARIS_SEQ_BUSY_PA),
++	    *polaris_m0c_word(gmu, pdc, POLARIS_RSC_STATUS0_PA));
++}
++
+ static void
+ polaris_m0c_write(vm_offset_t gmu, vm_offset_t pdc, uint64_t pa, uint32_t value)
+ {
+@@ -629,6 +649,8 @@
+ 	    *polaris_m0c_word(gmu, pdc, 0x0b480000ULL),
+ 	    *polaris_m0c_word(gmu, pdc, 0x0508d600ULL));
+ 
++	polaris_m0c_tcs("before req", gmu, pdc);
++
+ 	/* Wake request, then the vendor's two waits. */
+ 	*req = PG_GX_BIT_ON;
+ #if defined(__aarch64__)
+@@ -642,6 +664,7 @@
+ 		}
+ 	}
+ 	printf("POLARIS GPU: m0c ack 0x%08x after %u ms\n", *ack, (unsigned)(i + 1));
++	polaris_m0c_tcs("after req", gmu, pdc);
+ 	if (acked) {
+ 		for (i = 0; i < POLARIS_M0C_WAIT_MS; i++) {
+ 			delay(1000);
+@@ -676,6 +699,18 @@
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+ 
++	/*
++	 * If the sequencer is still busy, do not pull its program out from under it:
++	 * clear the enable (so the PDC is not left armed) and stop, leaving the
++	 * ucode in place for the next analysis.
++	 */
++	if (*busy != 0u) {
++		polaris_m0c_write(gmu, pdc, 0x0b284500ULL, 0u);
++		printf("POLARIS GPU: m0c quarantined: sequencer still busy (0x%08x); ucode left loaded, PDC disabled\n",
++		    *busy);
++		return;
++	}
++
+ 	/* Restore: ucode and TCS banks go back exactly as they were found. */
+ 	for (i = 0; i < words; i++) {
+ 		polaris_m0c_write(gmu, pdc, polaris_m0c_plan[i].pa, snapshot[i]);
+@@ -691,10 +726,14 @@
+ 	printf("POLARIS GPU: m0c restored: enable 0x%08x ack 0x%08x req 0x%08x busy 0x%08x\n",
+ 	    *polaris_m0c_word(gmu, pdc, 0x0b284500ULL), *ack, *req, *busy);
+ 
++	/*
++	 * status0 bit16 is set whenever GX is off, so "it went back to sleep" only
++	 * means something if the acknowledge had risen first.
++	 */
+ 	if (acked && idle && slept) {
+ 		printf("POLARIS GPU: m0c done: PDC ran, GX woke and went back to sleep\n");
+ 	} else if (!acked) {
+-		printf("POLARIS GPU: m0c quarantined: ucode loaded, no acknowledge\n");
++		printf("POLARIS GPU: m0c quarantined: ucode loaded, no acknowledge (sleep check meaningless)\n");
+ 	} else if (!idle) {
+ 		printf("POLARIS GPU: m0c quarantined: acknowledged but sequencer still busy\n");
+ 	} else {

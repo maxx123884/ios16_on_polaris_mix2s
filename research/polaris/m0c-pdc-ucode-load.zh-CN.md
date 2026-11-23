@@ -236,3 +236,23 @@ m0c quarantined: ucode loaded, no acknowledge
 的 bit31 语义之外的东西），也可能是 `REQ` 的触发方式（RSC 走的是 RPMh 命令而不是这一位）。
 下一步应当是**读而不是写**：`RSCC_TCS0..3_DRV0_STATUS`（0x0508dd18 起）与 `RSC_STATUS0` 的其它位，
 看定序器卡在哪个 TCS 上——读不会改变状态，风险远低于再写。
+
+## 14. 0112：只读 TCS，并修掉两个判据缺陷
+
+读三处 `RSCC_TCS{0,1,3}_DRV0_STATUS`（`0x0508dd18` / `0x0508e2b8` / `0x050907f8`，均由索引换算并自检），
+在 **发 REQ 之前** 与 **ACK 等待之后** 各读一次：
+
+```
+m0c tcs before req: tcs0 … tcs1 … tcs3 … busy … status0 …
+m0c tcs after req:  tcs0 … tcs1 … tcs3 … busy … status0 …
+```
+
+判据修正两处：
+
+1. `sleep status0` 只在 ACK 升起过时才算数，否则打印
+   `quarantined: ucode loaded, no acknowledge (sleep check meaningless)`；
+2. `busy != 0` 之后**不再抽走微码**：只清 `PDC_GPU_ENABLE`（避免 PDC 处于 armed 状态），
+   保留微码供下次分析，并打印
+   `quarantined: sequencer still busy (0x…); ucode left loaded, PDC disabled`。
+
+这两条是上一轮实测直接教出来的：假阳性会误导判断，抽走正在执行的程序会让状态更难解释。
