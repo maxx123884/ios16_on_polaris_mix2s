@@ -1,0 +1,61 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1040,7 +1040,7 @@
+ }
+ 
+ static void
+-polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc)
++polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test)
+ {
+ 	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
+ 	uint32_t v, waited;
+@@ -1112,6 +1112,40 @@
+ 	printf("POLARIS GPU: m1a gmu counter %u then %u over 1 ms: %s\n", c1, c2,
+ 	    (c2 != c1) ? "RUNNING - the GMU is alive" : "STILL - the GMU is not running");
+ 
++	/*
++	 * M1b step 9, only when asked: write two words into the GMU's ITCM, read them
++	 * back, then put the old words back. This answers "is the instruction memory
++	 * writable from here" without loading a firmware image and without touching
++	 * the M3's reset. ITCM starts at GMU word 0xc00 (0x1b400 less the 0x1a800 of
++	 * the GMU block), which is 0x0506d000 in physical terms.
++	 */
++	if (itcm_test) {
++		volatile uint32_t *itcm = (volatile uint32_t *)(uintptr_t)(gmuwin + 0xc00u * 4u);
++		uint32_t old0 = itcm[0], old1 = itcm[1];
++		uint32_t back0, back1, rest0, rest1;
++
++		printf("POLARIS GPU: m1b itcm was 0x%08x 0x%08x\n", old0, old1);
++		itcm[0] = 0x5eed0001u;
++		itcm[1] = 0x5eed0002u;
++#if defined(__aarch64__)
++		__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++		back0 = itcm[0];
++		back1 = itcm[1];
++		printf("POLARIS GPU: m1b itcm wrote 0x5eed0001 0x5eed0002, read 0x%08x 0x%08x: %s\n",
++		    back0, back1, (back0 == 0x5eed0001u && back1 == 0x5eed0002u) ?
++		    "writable and readable" : "MISMATCH");
++		itcm[0] = old0;
++		itcm[1] = old1;
++#if defined(__aarch64__)
++		__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++		rest0 = itcm[0];
++		rest1 = itcm[1];
++		printf("POLARIS GPU: m1b itcm restored 0x%08x 0x%08x: %s\n", rest0, rest1,
++		    (rest0 == old0 && rest1 == old1) ? "as found" : "NOT RESTORED");
++	}
++
+ undo:
+ 	if (gmu_clk) {
+ 		polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GMU_CBCR,
+@@ -1182,7 +1216,7 @@
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+ 	if (step >= 4) {
+-		polaris_gx_m1a_clocks(gcc, gpucc);
++		polaris_gx_m1a_clocks(gcc, gpucc, step >= 5);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}
