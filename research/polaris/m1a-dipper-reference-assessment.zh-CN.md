@@ -209,3 +209,22 @@ CX 有了电，但它那一半的时钟还是全关（`memnoc`/`snoc`/`cx_gmu`/`
 
 判据很干净：计数器是硬件自走的，不依赖我们理解固件。它一动，M1b（装固件 + HFI）才有意义。
 时钟开关和 CX 一样逐笔可逆：跑完把四个 CBCR 写回、CX 关掉，并复核。
+
+## 12. 0120：时钟与 GMU 计数器（`polarisgxm1=4`）
+
+`=4` 在 `=3` 的基础上继续，而且**CX 保持上电直到最后**：
+
+1. CX 上电（复用 `=3` 的序列，但不立刻撤销）；
+2. `polaris_branch_on(gcc, 0x7100c, memnoc)` → 验 CBCR bit31 落 0；
+3. `polaris_branch_on(gcc, 0x71018, snoc)`；
+4. GMU 时钟源：`RCG_CFG(0x1124) &= ~((7<<8)|0x1f)`（晶振、不分频），
+   `RCG_CMD(0x1120) |= ROOT_EN | UPDATE`，轮询到 `UPDATE` 与 `ROOT_OFF` 都落；
+5. `cx_gmu_cbcr(0x1098)` 先写 wake/sleep 字段 `(0xf<<8)|(0xf<<4)`，再 branch on；
+   `cxo_cbcr(0x109c)` branch on；
+6. **读 GMU 计数器两次**（word `0x5088`，地址 `0x0507e220`），中间 `delay(1000)`；
+7. 逆序撤销：gmu/cxo/snoc/memnoc 四个 branch 关掉 → CX GDSCR 写回快照 → 复核 `hw_ctrl`。
+
+判据只有一句：**`counter` 两次不同 → GMU 活着**。它是硬件自走的，不需要理解固件；
+反过来如果两次相同，说明还差电压票或时钟源不对，M1b 不能开始。
+
+任何一步失败都 `goto undo`，不会把 CX 留在开着而时钟半开的状态。

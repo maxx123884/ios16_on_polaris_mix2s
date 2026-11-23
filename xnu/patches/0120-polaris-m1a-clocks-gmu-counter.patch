@@ -1,0 +1,157 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1000,6 +1000,143 @@
+ 	}
+ }
+ 
++/*
++ * M1a step 4: with CX powered, bring up its clocks and ask the GMU whether it is
++ * alive. The clock order and the register semantics are the dipper port's step 5:
++ * enable the two GCC branches, program the GMU clock source (crystal, undivided),
++ * then the GMU's own branch - each verified by its status bit, not assumed.
++ *
++ * The verdict is the always-on counter at GMU word 0x5088. It is hardware-driven,
++ * so it needs no understanding of the firmware: if it moves, the GMU is running.
++ * Everything is undone in reverse and re-read, CX included.
++ */
++#define POLARIS_GPUCC_GMU_RCG_CMD	0x1120u
++#define POLARIS_GPUCC_GMU_RCG_CFG	0x1124u
++#define POLARIS_GPUCC_CX_GMU_CBCR	0x1098u
++#define POLARIS_GPUCC_CXO_CBCR		0x109cu
++#define POLARIS_CBCR_ENABLE		(1u << 0)
++#define POLARIS_RCG_UPDATE		(1u << 0)
++#define POLARIS_RCG_ROOT_EN		(1u << 1)
++#define POLARIS_RCG_ROOT_OFF		(1u << 31)
++#define POLARIS_GMU_COUNTER_WORD	0x5088u
++#define POLARIS_GMU_PA			0x0506a000ULL
++
++static bool
++polaris_branch_on(vm_offset_t base, uint32_t off, const char *name)
++{
++	uint32_t waited;
++
++	polaris_reg_wr(base, off, polaris_reg_rd(base, off) | POLARIS_CBCR_ENABLE);
++	for (waited = 0; waited <= 1000; waited += 5) {
++		if ((polaris_reg_rd(base, off) & POLARIS_CBCR_OFF) == 0) {
++			printf("POLARIS GPU: m1a clk %s on: 0x%08x\n", name, polaris_reg_rd(base, off));
++			return true;
++		}
++		delay(5);
++	}
++	printf("POLARIS GPU: m1a clk %s does not come on: 0x%08x\n", name,
++	    polaris_reg_rd(base, off));
++	return false;
++}
++
++static void
++polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc)
++{
++	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
++	uint32_t v, waited;
++	vm_offset_t gmuwin;
++	bool on = false, memnoc = false, snoc = false, rcg = false, cxo = false, gmu_clk = false;
++	uint32_t c1, c2;
++
++	/* CX on, and kept on for the duration. */
++	if ((polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL) & POLARIS_GDSC_PWR_ON) == 0) {
++		polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GDSCR,
++		    (before & ~POLARIS_GDSCR_CLK_DIS_WAIT) |
++		    (POLARIS_CX_CLK_DIS_WAIT_VAL << 12));
++		v = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
++		polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GDSCR, v & ~POLARIS_GDSCR_SW_COLLAPSE);
++		delay(1);
++		on = polaris_cx_wait(gpucc, true);
++	}
++	printf("POLARIS GPU: m1a clocks: cx %s hw_ctrl 0x%08x\n", on ? "on" : "STILL OFF",
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL));
++	if (!on) {
++		return;
++	}
++
++	memnoc = polaris_branch_on(gcc, 0x7100cu, "gcc_gpu_memnoc_gfx");
++	snoc = memnoc ? polaris_branch_on(gcc, 0x71018u, "gcc_gpu_snoc_dvm_gfx") : false;
++	if (!snoc) {
++		goto undo;
++	}
++
++	/* The GMU's clock source: crystal, undivided, then the update bit. */
++	v = polaris_reg_rd(gpucc, POLARIS_GPUCC_GMU_RCG_CFG);
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_GMU_RCG_CFG, v & ~((7u << 8) | 0x1fu));
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_GMU_RCG_CMD,
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_GMU_RCG_CMD) | POLARIS_RCG_ROOT_EN |
++	    POLARIS_RCG_UPDATE);
++	for (waited = 0; waited <= 1000; waited += 5) {
++		v = polaris_reg_rd(gpucc, POLARIS_GPUCC_GMU_RCG_CMD);
++		if ((v & POLARIS_RCG_UPDATE) == 0 && (v & POLARIS_RCG_ROOT_OFF) == 0) {
++			rcg = true;
++			break;
++		}
++		delay(5);
++	}
++	printf("POLARIS GPU: m1a clk gmu source: cmd 0x%08x cfg 0x%08x: %s\n",
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_GMU_RCG_CMD),
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_GMU_RCG_CFG),
++	    rcg ? "updated, root on" : "NOT UPDATED");
++	if (!rcg) {
++		goto undo;
++	}
++
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GMU_CBCR,
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GMU_CBCR) | ((0xfu << 8) | (0xfu << 4)));
++	cxo = polaris_branch_on(gpucc, POLARIS_GPUCC_CXO_CBCR, "gpu_cc_cxo_clk");
++	gmu_clk = cxo ? polaris_branch_on(gpucc, POLARIS_GPUCC_CX_GMU_CBCR, "gpu_cc_cx_gmu_clk") : false;
++	if (!gmu_clk) {
++		goto undo;
++	}
++
++	/* The question: is the GMU's always-on counter moving? */
++	gmuwin = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	if (gmuwin == 0) {
++		printf("POLARIS GPU: m1a gmu window map failed\n");
++		goto undo;
++	}
++	c1 = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_COUNTER_WORD * 4u);
++	delay(1000);
++	c2 = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_COUNTER_WORD * 4u);
++	printf("POLARIS GPU: m1a gmu counter %u then %u over 1 ms: %s\n", c1, c2,
++	    (c2 != c1) ? "RUNNING - the GMU is alive" : "STILL - the GMU is not running");
++
++undo:
++	if (gmu_clk) {
++		polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GMU_CBCR,
++		    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GMU_CBCR) & ~POLARIS_CBCR_ENABLE);
++	}
++	if (cxo) {
++		polaris_reg_wr(gpucc, POLARIS_GPUCC_CXO_CBCR,
++		    polaris_reg_rd(gpucc, POLARIS_GPUCC_CXO_CBCR) & ~POLARIS_CBCR_ENABLE);
++	}
++	if (snoc) {
++		polaris_reg_wr(gcc, 0x71018u, polaris_reg_rd(gcc, 0x71018u) & ~POLARIS_CBCR_ENABLE);
++	}
++	if (memnoc) {
++		polaris_reg_wr(gcc, 0x7100cu, polaris_reg_rd(gcc, 0x7100cu) & ~POLARIS_CBCR_ENABLE);
++	}
++	delay(10);
++	polaris_reg_wr(gpucc, POLARIS_GPUCC_CX_GDSCR, before);
++	delay(1);
++	printf("POLARIS GPU: m1a clocks undone: cx hw_ctrl 0x%08x memnoc 0x%08x snoc 0x%08x cxo 0x%08x gmu 0x%08x\n",
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_HWCTRL),
++	    polaris_reg_rd(gcc, 0x7100cu), polaris_reg_rd(gcc, 0x71018u),
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CXO_CBCR),
++	    polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GMU_CBCR));
++}
++
+ static void
+ polaris_gx_m1a(int step)
+ {
+@@ -1044,7 +1181,9 @@
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+-	if (step >= 3) {
++	if (step >= 4) {
++		polaris_gx_m1a_clocks(gcc, gpucc);
++	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}
+ }
