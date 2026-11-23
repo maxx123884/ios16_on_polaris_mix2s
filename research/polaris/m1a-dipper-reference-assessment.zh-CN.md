@@ -177,3 +177,35 @@ m1a cx after:  gdscr 0x00228000 hw_ctrl 0x8……: power ON
 m1a cx restore gdscr 0x00222001
 m1a cx restored: hw_ctrl 0x00005ff4: switch fell again
 ```
+
+## 10. 实测：CX 开得起来，也关得回去（2026-11-24 01:52，`polarisgxm1=3`）
+
+```
+POLARIS GPU: m1a cx before: gdscr 0x00222001 hw_ctrl 0x00005ff4
+POLARIS GPU: m1a cx write gdscr 0x00228001 (clk-dis-wait 8)
+POLARIS GPU: m1a cx write gdscr 0x00228000 (collapse cleared)
+POLARIS GPU: m1a cx after: gdscr 0xf8228000 hw_ctrl 0x80001fe0: power ON
+POLARIS GPU: m1a cx restore gdscr 0x00222001
+POLARIS GPU: m1a cx restored: hw_ctrl 0x00005ff4: switch fell again
+```
+
+- `hw_ctrl` 从 `0x00005ff4`（bit31=0）变成 `0x80001fe0`（**bit31=1**）：CX 域上电；
+- 写回快照后回到 `0x00005ff4`：**掉电**；
+- GDSCR 上电后读 `0xf8228000`：bit31 是上电状态位，bit0（SW_COLLAPSE）已清。
+
+**这是本项目第一次真正给 GPU 的某一半供上电，并且完整地撤了回来。**
+`m1-gmu-feasibility` 里「CX 关着所以 GPU 不可达、到此为止」的结论据此作废——CX 不是不可达，
+而是需要我们把开关打开，而这件事刚刚做成了。
+
+## 11. 下一步：第 4 步（时钟）与第 6 步（GMU 是不是活的）
+
+CX 有了电，但它那一半的时钟还是全关（`memnoc`/`snoc`/`cx_gmu`/`cxo` 的 CBCR bit31 都为 1）。
+所以下一步是在 **CX 保持上电的窗口内**：
+
+1. 开 `gpu_memnoc_gfx`（`GCC 0x7100c`）与 `gpu_snoc_dvm_gfx`（`0x71018`），各验 CBCR bit31 落 0；
+2. 开 `cx_gmu_clk`（`GPUCC 0x1098`）与 `cxo_clk`（`0x109c`）；
+3. 设 GMU 时钟源（`0x1120` RCG CMD：`UPDATE | ROOT_EN`，`0x1124` CFG 定源）；
+4. **读 GMU 的 AO 电源计数器两次**，中间隔几毫秒——**如果它在走，GMU 就活着**。
+
+判据很干净：计数器是硬件自走的，不依赖我们理解固件。它一动，M1b（装固件 + HFI）才有意义。
+时钟开关和 CX 一样逐笔可逆：跑完把四个 CBCR 写回、CX 关掉，并复核。
