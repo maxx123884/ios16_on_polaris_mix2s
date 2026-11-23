@@ -1,0 +1,34 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -244,7 +244,7 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void ml_io_unmap(vm_offset_t, vm_size_t);
+ extern void delay(int);	/* microseconds in XNU; M0b waits in 1 ms steps */
+-extern int ml_get_cpu_count(void);	/* for the CPU liveness report */
++extern unsigned int ml_get_cpu_count(void);	/* for the CPU liveness report */
+ 
+ static bool
+ polaris_gx_in_window(uint64_t pa)
+@@ -846,18 +846,17 @@
+ static void
+ polaris_cpu_report(void)
+ {
+-	int i;
+-	int count = ml_get_cpu_count();
++	unsigned int i, count = ml_get_cpu_count();
+ 
+-	printf("POLARIS GPU: cpu count %d\n", count);
++	printf("POLARIS GPU: cpu count %u\n", count);
+ 	for (i = 0; i < count && i < MAX_SCHED_CPUS; i++) {
+ 		processor_t proc = processor_array[i];
+ 
+ 		if (proc == PROCESSOR_NULL) {
+-			printf("POLARIS GPU: cpu %d: no processor object\n", i);
++			printf("POLARIS GPU: cpu %u: no processor object\n", i);
+ 			continue;
+ 		}
+-		printf("POLARIS GPU: cpu %d: cpu_id %d state %d running %u thread %s\n",
++		printf("POLARIS GPU: cpu %u: cpu_id %d state %d running %u thread %s\n",
+ 		    i, proc->cpu_id, (int)proc->state,
+ 		    proc->state == PROCESSOR_RUNNING ? 1u : 0u,
+ 		    proc->active_thread != THREAD_NULL ? "yes" : "no");
