@@ -303,7 +303,21 @@ unreachable, and the reason is one level above where M0c stopped: CX comes up th
 a GDSC owner - nor may it flip GDSCR by hand, which the contract forbids.
 
 Two routes, one root cause: no RPMh. GPU work on this port stops here, and the prerequisite is its own layer,
-larger than everything done today and gated on `pd`/TZ permission evidence. What the day did buy: nine reads
+larger than everything done today and gated on `pd`/TZ permission evidence. 
+
+**Then a same-SoC reference changed the plan.** youzjuzi/dipper-xnu is an XNU 16.5 port for the Mi 8 - same
+SDM845, same A630 - and it renders with Mesa/freedreno at 59 FPS. Its `bsd/dev/mi8_adreno.c` walks the GPU up in
+ten numbered steps with exactly this project's discipline, and step 4 is the one we were missing: CX is a
+VOTABLE GDSC, so clearing `SW_COLLAPSE` in `0x509106c` and polling `gds_hw_ctrl` (`0x5091540`) bit31 turns the
+GMU's half on - no RPMh vote needed, because the PMIC rail is already up from the bootloader. That retires our
+"CX needs RPMh" conclusion. It also warns, in step 3, that GPUCC must not be touched before
+`GCC_GPU_CFG_AHB_CLK` is confirmed running.
+
+The code itself cannot be copied: `mi8_a630_hw_init.inc` is GPL-2.0-only (180 init writes, 105 HWCG entries, 32
+CP protect entries, all Linux-derived) and that project's own legal note says APSL 2.0 and GPL are incompatible,
+so it ships sources only. What is portable is the technique and the same public sources it cites (Linux
+`gdsc.c`, `gpucc-sdm845.c`, `cmd-db.c`), which is how this project works anyway. Plan recorded in
+`m1a-dipper-reference-assessment.zh-CN.md`.What the day did buy: nine reads
 settled both routes, which is cheaper and cleaner than the information M0b and M0c bought with writes.
 
 **Then the CPU row got its evidence, and a probe to close the rest of it.** The 22:35 ring shows the shim
