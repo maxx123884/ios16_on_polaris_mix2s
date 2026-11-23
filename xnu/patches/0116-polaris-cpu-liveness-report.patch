@@ -1,0 +1,84 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -11,6 +11,7 @@
+ #include <pexpert/device_tree.h>
+ #include "polaris_gpu_hash.h"
+ #include "polaris_gpu_validate.h"
++#include <kern/processor.h>
+ 
+ extern bool polaris_touch_i2c_board(void);
+ 
+@@ -243,6 +244,7 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void ml_io_unmap(vm_offset_t, vm_size_t);
+ extern void delay(int);	/* microseconds in XNU; M0b waits in 1 ms steps */
++extern int ml_get_cpu_count(void);	/* for the CPU liveness report */
+ 
+ static bool
+ polaris_gx_in_window(uint64_t pa)
+@@ -832,6 +834,49 @@
+ }
+ 
+ /*
++ * CPU liveness, read-only.
++ *
++ * The console ring already shows the shim bringing all eight cores up over PSCI
++ * and getting an SGI1 round-trip from each, and the kernel prints "mcache: 8
++ * CPU(s)" - but that count comes from the configuration, not from the cores. What
++ * proves XNU itself considers a core running is cpu_running, which arm64 sets in
++ * cpu.c when the secondary is brought up inside the kernel.
++ */
++#if defined(MACH_KERNEL_PRIVATE)
++static void
++polaris_cpu_report(void)
++{
++	int i;
++	int count = ml_get_cpu_count();
++
++	printf("POLARIS GPU: cpu count %d\n", count);
++	for (i = 0; i < count && i < MAX_SCHED_CPUS; i++) {
++		processor_t proc = processor_array[i];
++
++		if (proc == PROCESSOR_NULL) {
++			printf("POLARIS GPU: cpu %d: no processor object\n", i);
++			continue;
++		}
++		printf("POLARIS GPU: cpu %d: cpu_id %d state %d running %u thread %s\n",
++		    i, proc->cpu_id, (int)proc->state,
++		    proc->state == PROCESSOR_RUNNING ? 1u : 0u,
++		    proc->active_thread != THREAD_NULL ? "yes" : "no");
++	}
++}
++#else
++/*
++ * processor_array and struct processor are behind MACH_KERNEL_PRIVATE, so the
++ * host syntax check cannot see them. The report is pure observation, so it is
++ * simply absent there - the kernel build, which is what runs, does compile it.
++ */
++static void
++polaris_cpu_report(void)
++{
++	printf("POLARIS GPU: cpu report unavailable in host build\n");
++}
++#endif
++
++/*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+  * No stages after the board stage have a backend in this revision.
+@@ -855,6 +900,15 @@
+ 			if (probe) {
+ 				polaris_gx_readonly_probe();
+ 			}
++			/* Read-only CPU liveness report, its own opt-in too. */
++			{
++				int cpu = 0;
++
++				PE_parse_boot_argn("polariscpu", &cpu, sizeof(cpu));
++				if (cpu != 0) {
++					polaris_cpu_report();
++				}
++			}
+ 			/* Read-only GMU feasibility check, its own opt-in as well. */
+ 			PE_parse_boot_argn("polarisgmgmu", &m1, sizeof(m1));
+ 			if (probe && m1 != 0) {

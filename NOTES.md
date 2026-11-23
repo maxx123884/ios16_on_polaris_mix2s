@@ -306,6 +306,15 @@ Two routes, one root cause: no RPMh. GPU work on this port stops here, and the p
 larger than everything done today and gated on `pd`/TZ permission evidence. What the day did buy: nine reads
 settled both routes, which is cheaper and cleaner than the information M0b and M0c bought with writes.
 
+**Then the CPU row got its evidence, and a probe to close the rest of it.** The 22:35 ring shows the shim
+raising all eight cores over PSCI (`CPU_ON rc=0`, each `mpidr` 0x400..0x700 "came alive", SGI1 round-trip
+verified each time) and the kernel's own `mcache: 8 CPU(s)` - but that count comes from configuration, not
+from liveness, and the README had been saying A75s were unproven. So `0116` adds `polariscpu=1`: a read-only
+walk of `processor_array[]` printing `state`, `cpu_id` and whether an active thread exists, which is XNU
+saying "this processor is running" rather than "this processor exists". It sits behind `MACH_KERNEL_PRIVATE`
+because `processor_array` is kernel-private, so the host syntax check compiles the stub and CI is the first
+real compile of the kernel branch - worth remembering when reading the next run.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
