@@ -1,0 +1,26 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -227,6 +227,14 @@
+  * and nothing acting on it.
+  */
+ #define POLARIS_PDC_ENABLE_PA	0x0b284500ULL
++/*
++ * The vendor writes PDC_GPU_ENABLE_PDC = 0x80000001 (_load_gmu_rpmh_ucode in
++ * adreno_a6xx.c), and tools/polaris_gmu_csr.py has carried that value since it
++ * was written. mode 2 wrote only 0x1, which is why it looked like the enable was
++ * accepted and nothing happened. OR rather than a literal store, so bits this
++ * port does not know about are kept.
++ */
++#define POLARIS_PDC_ENABLE_VALUE	0x80000001u
+ 
+ /* Filled by polaris_gx_readonly_probe(); read by the decision and by M0b. */
+ static struct pg_gx_state polaris_gx_last;
+@@ -382,7 +390,7 @@
+ 		enable = (volatile uint32_t *)(uintptr_t)(pdc +
+ 		    (POLARIS_PDC_ENABLE_PA - POLARIS_PDC_PA));
+ 		pdc_before = *enable;
+-		*enable = pdc_before | 1u;
++		*enable = pdc_before | POLARIS_PDC_ENABLE_VALUE;
+ #if defined(__aarch64__)
+ 		__asm__ volatile ("dsb sy" ::: "memory");
+ #endif

@@ -233,6 +233,17 @@ observation in section 7 said the bootloader never programs the TCS on this path
 one-bit reversible step, so the next move is a design (source of the sequence, what each word means, how to
 write without triggering) before any code - and M1 stays closed until then.
 
+**The vendor source then explained both null results, and caught a mistake of mine.** `_load_gmu_rpmh_ucode()`
+in `adreno_a6xx.c` writes `PDC_GPU_ENABLE_PDC = 0x80000001` - and `tools/polaris_gmu_csr.py` has pinned that
+exact value since it was written, while mode 2 only OR-ed `0x1`. It also loads ten words of sequencer ucode
+(five into `RSCC_SEQ_MEM_0_DRV0`, five into `PDC_GPU_SEQ_MEM_0`) plus TCS1/TCS3 command banks, and the
+bootloader leaves all of it unwritten - which is why the request had nothing to run. `0108` fixes the enable
+value and adds `tools/test_polaris_pdc_enable.py`, which fails if the tool's pinned value and the kernel
+constant ever disagree. The full sequence, with offsets from `a6xx_reg.h` converted and cross-checked against
+the registers we measured, is written up in `m0c-pdc-ucode-load.zh-CN.md`, together with the vendor's power-off
+handshake (REQ bit0 -> `RSC_STATUS0` bit16 -> REQ 0) and the rule that the ten ucode words are snapshotted,
+restored, and never left behind half-written.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
