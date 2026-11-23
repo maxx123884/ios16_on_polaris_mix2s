@@ -1,0 +1,52 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -529,11 +529,30 @@
+  * on the framebuffer, so the last line on the screen names the write that
+  * stopped the SoC. That is the bisection signal this sequence needs.
+  */
++/*
++ * The console ring is flushed by a thread on a one second timer, and the gate
++ * runs long before the first flush - which is why a hang here used to leave the
++ * ring empty. So every write waits out one flush period after announcing itself:
++ * if the store locks the bus, the line naming it is already in flash.
++ */
++#define POLARIS_M0C_FLUSH_US	1300000	/* default sweet_log_secs is 1 */
++
++static int polaris_m0c_steps_left = -1;	/* -1: no limit, else remaining writes */
++
+ static void
+ polaris_m0c_write(vm_offset_t gmu, vm_offset_t pdc, uint64_t pa, uint32_t value)
+ {
++	if (polaris_m0c_steps_left == 0) {
++		printf("POLARIS GPU: m0c stop: step limit reached before 0x%08llx\n",
++		    (unsigned long long)pa);
++		return;
++	}
++	if (polaris_m0c_steps_left > 0) {
++		polaris_m0c_steps_left--;
++	}
+ 	printf("POLARIS GPU: m0c write 0x%08llx = 0x%08x (was 0x%08x)\n",
+ 	    (unsigned long long)pa, value, *polaris_m0c_word(gmu, pdc, pa));
++	delay(POLARIS_M0C_FLUSH_US);
+ 	*polaris_m0c_word(gmu, pdc, pa) = value;
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+@@ -585,6 +604,7 @@
+ 	    *ack, *req, *busy, *status0,
+ 	    *polaris_m0c_word(gmu, pdc, 0x0b284500ULL),
+ 	    *polaris_m0c_word(gmu, pdc, 0x0b480000ULL));
++	delay(POLARIS_M0C_FLUSH_US);
+ 
+ 	/* The vendor's order: SDE gate, slave id, hidden TCS, override, then ucode. */
+ 	polaris_m0c_write(gmu, pdc, POLARIS_RSC_STATUS0_PA,
+@@ -714,6 +734,10 @@
+ 			if (probe && m0b >= 1 && polaris_gx_last_valid &&
+ 			    pg_gx_decide(&polaris_gx_last) == PG_GX_WRITE_REQ) {
+ 				if (m0b >= 3) {
++					int steps = -1;
++
++					PE_parse_boot_argn("polarisgxm0csteps", &steps, sizeof(steps));
++					polaris_m0c_steps_left = steps;
+ 					polaris_gx_m0c();
+ 				} else {
+ 					polaris_gx_m0b((unsigned int)m0b);
