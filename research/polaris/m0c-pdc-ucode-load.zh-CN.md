@@ -256,3 +256,14 @@ m0c tcs after req:  tcs0 … tcs1 … tcs3 … busy … status0 …
    `quarantined: sequencer still busy (0x…); ucode left loaded, PDC disabled`。
 
 这两条是上一轮实测直接教出来的：假阳性会误导判断，抽走正在执行的程序会让状态更难解释。
+
+## 15. 0113：没醒就不假装去睡
+
+上一轮打印过 `m0c sleep status0 0x01010006 after 1 ms`——因为 GX 关着时 bit16 天生为 1，
+"下电在 1 ms 内完成"纯属幻觉。`0112` 只修正了**报告**，轮询本身还在空转；`0113` 让它彻底不跑：
+
+```c
+if (acked) { 轮询 bit16 … } else { 打印 "sleep skipped: GX never woke" }
+```
+
+同一个假阳性在这个文件里出现过一次就够，`0113` 把产生它的路径也去掉。

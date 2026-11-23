@@ -1,0 +1,34 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -686,14 +686,25 @@
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+-	for (i = 0; i < POLARIS_M0C_WAIT_MS; i++) {
+-		delay(1000);
+-		if ((*status0 & (1u << 16)) != 0) {
+-			slept = true;
+-			break;
++	/*
++	 * Only wait for the rail to come down if it ever came up. status0 bit16 is
++	 * set whenever GX is off, so polling it after a failed wake "succeeds" on the
++	 * first read and says nothing - which is exactly the false positive this port
++	 * printed once already.
++	 */
++	if (acked) {
++		for (i = 0; i < POLARIS_M0C_WAIT_MS; i++) {
++			delay(1000);
++			if ((*status0 & (1u << 16)) != 0) {
++				slept = true;
++				break;
++			}
+ 		}
++		printf("POLARIS GPU: m0c sleep status0 0x%08x after %u ms\n",
++		    *status0, (unsigned)(i + 1));
++	} else {
++		printf("POLARIS GPU: m0c sleep skipped: GX never woke (status0 0x%08x)\n", *status0);
+ 	}
+-	printf("POLARIS GPU: m0c sleep status0 0x%08x after %u ms\n", *status0, (unsigned)(i + 1));
+ 	*req = 0u;
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
