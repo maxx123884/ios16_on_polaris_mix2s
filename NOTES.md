@@ -251,6 +251,16 @@ REQ 0), then the snapshot written back and re-read. Four endings: done, no ackno
 sequencer busy, woke but did not sleep - the last one is the "we own power-on but not power-off" case that
 stops everything.
 
+**Mode 3 hung the SoC** (2026-11-23 15:35 and 15:39): two boots, no ring entry at all - the ring still held the
+same 115,144 bytes with the installed image's `cpus=4` boot-args. The A/B settles it: the 0107 image, same
+phone, same cable, immediately produced 916 KB and eleven `m0b` lines. Payload segment tables of 107 and 109
+are byte-identical in layout and both kernels match their CI SHA256SUMS, so this is not a bad image - the code
+kills the SoC before the first ring flush (the gate runs at ~1.4 s, the flush has not happened yet). Most
+likely one of the PDC/AOSS writes locks the bus; the RSC window is already proven writable by M0b, but that is
+inference. The phone recovered with power+volume-down and iOS booted normally, so nothing persisted.
+`0110` announces every write through kprintf, which also draws on the framebuffer: the last line visible on
+the screen names the write that stopped it, so one boot and one photo locate it - no bisection rounds.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

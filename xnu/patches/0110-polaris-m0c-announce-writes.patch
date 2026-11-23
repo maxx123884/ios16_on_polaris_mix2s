@@ -1,0 +1,76 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -523,6 +523,23 @@
+ 	return (uint32_t *)(uintptr_t)(gmu + (pa - POLARIS_GMU_PA));
+ }
+ 
++/*
++ * Every write is announced before it happens. A hang here leaves the console
++ * ring un-flushed (the gate runs before the first flush), but kprintf also draws
++ * on the framebuffer, so the last line on the screen names the write that
++ * stopped the SoC. That is the bisection signal this sequence needs.
++ */
++static void
++polaris_m0c_write(vm_offset_t gmu, vm_offset_t pdc, uint64_t pa, uint32_t value)
++{
++	printf("POLARIS GPU: m0c write 0x%08llx = 0x%08x (was 0x%08x)\n",
++	    (unsigned long long)pa, value, *polaris_m0c_word(gmu, pdc, pa));
++	*polaris_m0c_word(gmu, pdc, pa) = value;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++}
++
+ static void
+ polaris_gx_m0c(void)
+ {
+@@ -570,18 +587,19 @@
+ 	    *polaris_m0c_word(gmu, pdc, 0x0b480000ULL));
+ 
+ 	/* The vendor's order: SDE gate, slave id, hidden TCS, override, then ucode. */
+-	*status0 = singles[0] | (1u << POLARIS_RSC_STATUS0_BIT);
+-	*polaris_m0c_word(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA) = 1u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA) = 0u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA) = 0u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA + 8) = 0u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA + 8) = 0u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA + 16) = 0x80000000u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA + 16) = 0u;
+-	*polaris_m0c_word(gmu, pdc, POLARIS_OVERRIDE_START_PA) = 0u;
++	polaris_m0c_write(gmu, pdc, POLARIS_RSC_STATUS0_PA,
++	    singles[0] | (1u << POLARIS_RSC_STATUS0_BIT));
++	polaris_m0c_write(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA, 1u);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA, 0u);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA, 0u);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA + 8, 0u);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA + 8, 0u);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA + 16, 0x80000000u);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA + 16, 0u);
++	polaris_m0c_write(gmu, pdc, POLARIS_OVERRIDE_START_PA, 0u);
+ 
+ 	for (i = 0; i < words; i++) {
+-		*polaris_m0c_word(gmu, pdc, polaris_m0c_plan[i].pa) = polaris_m0c_plan[i].value;
++		polaris_m0c_write(gmu, pdc, polaris_m0c_plan[i].pa, polaris_m0c_plan[i].value);
+ 	}
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+@@ -640,13 +658,13 @@
+ 
+ 	/* Restore: ucode and TCS banks go back exactly as they were found. */
+ 	for (i = 0; i < words; i++) {
+-		*polaris_m0c_word(gmu, pdc, polaris_m0c_plan[i].pa) = snapshot[i];
++		polaris_m0c_write(gmu, pdc, polaris_m0c_plan[i].pa, snapshot[i]);
+ 	}
+-	*status0 = singles[0];
+-	*polaris_m0c_word(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA) = singles[1];
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA) = singles[2];
+-	*polaris_m0c_word(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA) = singles[3];
+-	*polaris_m0c_word(gmu, pdc, POLARIS_OVERRIDE_START_PA) = singles[4];
++	polaris_m0c_write(gmu, pdc, POLARIS_RSC_STATUS0_PA, singles[0]);
++	polaris_m0c_write(gmu, pdc, POLARIS_PDC_SLAVE_ID_PA, singles[1]);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_ADDR_PA, singles[2]);
++	polaris_m0c_write(gmu, pdc, POLARIS_HIDDEN_TCS_DATA_PA, singles[3]);
++	polaris_m0c_write(gmu, pdc, POLARIS_OVERRIDE_START_PA, singles[4]);
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif

@@ -148,3 +148,34 @@ m0c done: PDC ran, GX woke and went back to sleep
 
 本地验证（不需要设备）：`-Weverything -Werror` 真头文件编译、主机 gate 7 场景、校验器全部断言、
 `PDC_GPU_ENABLE_PDC` 防漂移测试、aarch64-macos 交叉编译、哈希桩全部通过。
+
+## 10. 第一次上机：SoC 挂死（2026-11-23 15:35 与 15:39）
+
+`polarisgxm0b=3` 镜像两次 `fastboot boot` 后：
+
+- console ring **一个字都没新增**（两次读到的都是同一份 115,144 字节的旧日志，`boot-args` 还是安装镜像的
+  `cpus=4`）；
+- 用**旧镜像（0107）**做 A/B：同一个手机、同一条链路，ring 立刻出现 916 KB 日志与 11 处 `m0b` 行；
+- payload 段表逐字节比对：0107 与 0109 的段布局、`kernel_end`、`mem_size` 完全一致，只有内容不同；
+- 两个内核的 SHA-256 都与 CI 产物内的 `SHA256SUMS` 一致。
+
+**结论：0109 的代码把 SoC 卡死了**，而且卡在 console ring 第一次 flush 之前（gate 大约在 1.4 s 跑，
+第一轮 flush 还没到），所以 ring 里没有任何痕迹——不是镜像没起来，是起来后立刻死。
+
+按写入位置推断，最可能是某一笔 **PDC/AOSS 窗口的写**（`0x0b480000` 段或 TCS bank）让 AOSS 总线锁死；
+RSC 窗口的写（`0x0508d6xx`）在 M0b 已证明可写。但这是推断，不是测量。
+
+设备恢复：按住电源+音量下即可回 fastboot，之后 iOS 正常启动——**没有留下持久状态**。
+
+## 11. 下一次上机怎么定位（0110）
+
+`0110` 把每一次写都变成一行 kprintf：
+
+```
+POLARIS GPU: m0c write 0x0b480000 = 0xfebea1e1 (was 0x00000000)
+```
+
+kprintf 同时上屏幕（`-enable_kprintf_spam` + fbcon），所以**挂死前最后一行留在屏幕上**。
+一次启动 + 一张照片就能定位到具体那一笔写，不需要二分多轮。
+
+在那之前不再改写入内容：先知道"哪一笔会挂"，再谈"为什么挂、能不能绕开"。
