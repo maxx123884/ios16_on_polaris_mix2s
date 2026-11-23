@@ -224,6 +224,15 @@ usual. So the GMU window is writable, that bit is reversible, and nothing acts o
 first, then request, with a self-protecting read between them - if the acknowledge rises while PDC is enabled
 and no request is pending, enabling PDC is itself a power-on, and the bit is restored immediately.
 
+**Mode 2 ran too** (2026-11-23 14:54): `PDC_GPU_ENABLE` bit0 written and read back as 1, the acknowledge
+between enabling PDC and setting the request stayed 0 - so enabling the PDC does not power GX by itself, and
+the switch is safe to toggle - but the request still got no acknowledge within 21 ms. Everything was
+restored and the phone booted to iOS. The gap is therefore not the enable bit: it is the TCS sequence behind
+it. `SEQ_START 0x4520` / `MATCH_* 0x4510,0x4514` are match conditions, not a program, and the third-party
+observation in section 7 said the bootloader never programs the TCS on this path. Programming it is not a
+one-bit reversible step, so the next move is a design (source of the sequence, what each word means, how to
+write without triggering) before any code - and M1 stays closed until then.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

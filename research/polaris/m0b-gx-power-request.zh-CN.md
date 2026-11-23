@@ -158,3 +158,40 @@ POLARIS GPU: m0b quarantined: no acknowledge; check PDC_GPU_ENABLE bit0
 `enabling PDC alone powered GX; restored`，不再往下做。
 
 `mode 1` 在那台机器上已证明请求送得到、没人执行，所以这一步是顺着证据走的，不是猜。
+
+## 12. 第二级真机结果（2026-11-23 14:54，`polarisgxm0b=2`）
+
+```
+POLARIS GPU: m0b pre: ack 0x00000000 req 0x00000000 busy 0x00000000 pdc 0x00000000 seq 0x00004520
+POLARIS GPU: m0b pdc enable 0x00000000 -> 0x00000001
+POLARIS GPU: m0b pdc post: ack 0x00000000 (must still be 0)
+POLARIS GPU: m0b set req 0x00000000 -> 0x00000002
+POLARIS GPU: m0b ack 0x00000000 after 21 ms
+POLARIS GPU: m0b post: ack 0x00000000 req 0x00000002
+POLARIS GPU: m0b cleared req -> 0x00000000
+POLARIS GPU: m0b ack 0x00000000 after 1 ms
+POLARIS GPU: m0b pdc restored -> 0x00000000
+POLARIS GPU: m0b quarantined: no acknowledge; check PDC_GPU_ENABLE bit0
+```
+
+三条写入（`PDC_GPU_ENABLE` bit0、`CONTROL_REQ` bit1、以及两次撤销）都回读确认，全部还原；
+`pdc post` 那行的 ACK 仍然是 0，说明**使能 PDC 本身不会自作主张上电**——这一点很重要，
+它意味着 PDC 这个开关是安全的、可以反复开合。
+
+**但 PDC 使能之后 REQ 仍无应答**，所以缺口不在"开关"，而在**开关后面要执行的东西**：
+PDC 的 TCS 序列。§7 引用过第三方实现的观察——fastboot 路径上 TCS（`SEQ_MEM` 5 字 +
+TCS1/TCS3 bank）没有被 bootloader 编程；而我们读到的 `SEQ_START=0x4520`、
+`MATCH_LO=0x4510`、`MATCH_HI=0x4514` 只是**匹配条件**，不是序列本体。
+
+## 13. 下一步（尚未设计）
+
+要让 REQ 有回应，需要在 PDC 里放一段能跑的序列。这已经不是"一位、可逆"的量级：
+
+- `SEQ_MEM` 至少 5 个字，加上 TCS1/TCS3 bank，写入后**无法用读回确认语义**（只能读回字节）；
+- 序列内容必须来自可信来源：厂商 KGSL 的 PDC 编程代码，或第三方 fork 的实现（后者属于交叉证据，
+  按项目规则只能当"别人的观测"，不能当本机事实）；
+- 一旦序列被写入并触发，`RSCC_CONTROL_REQ` 就可能真的把 GX 上电——**那时才真正进入 §5 判据表
+  最坏情况的辖区**（上电成功、关不回去）。
+
+所以下一步是**设计**而不是代码：先把 TCS 序列的来源、每个字的含义、以及"写进去但不触发"的
+方法（例如先写序列、不开 PDC）确认清楚，再决定要不要做。在此之前 M1（时钟/固件/SMMU/CP）不应开始。
