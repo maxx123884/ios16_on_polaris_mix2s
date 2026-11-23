@@ -209,6 +209,14 @@ Its judgement table is the part worth keeping: ack up but not down means we do n
 that stops M1 outright. Nothing is acquired here - no clock vote, no GMU firmware, no SMMU, no CP - so the
 GX domain is never left powered on our behalf.
 
+**0106 implements it, behind its own switch** (`polarisgxm0b=1`, never implied by `polarisgxprobe=1`): the
+gate writes `CONTROL_REQ` bit1 only when `pg_gx_decide()` says `PG_GX_WRITE_REQ`, polls `CONTROL_ACK` bit1
+every 1 ms for up to 20 ms, withdraws the request either way, waits for the acknowledge to fall, and reports
+one of done / no acknowledge (read `PDC_GPU_ENABLE` bit0) / acknowledge did not fall (quarantine, no later
+stage). `dsb sy` is emitted for aarch64 only, so the host harness compiles it. Verified without the phone:
+`-Weverything -Werror` against the real headers, the 7 gate scenarios, every validator assertion, the
+aarch64-macos cross-compile and the hash harness - `tools/gate/kernel.c` gained a `delay()` stub for it.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

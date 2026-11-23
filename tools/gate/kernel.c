@@ -28,6 +28,13 @@
 static char g_log[16384];
 static size_t g_log_len;
 
+/* M0b waits in 1 ms steps; the host harness does not have to actually wait. */
+void
+delay(int usec)
+{
+	(void)usec;
+}
+
 /* 0097's probe unmaps what it mapped; the harness keeps its maps listed. */
 void
 ml_io_unmap(vm_offset_t addr, vm_size_t size)

@@ -110,3 +110,21 @@ POLARIS GPU: m0b done: request/ack/clear closed, GX back to off
 - 唯一的持久风险是"上电成功但关不回去"，判据表第三条专门拦它。
 - 回退：无需任何刷写动作——`fastboot boot` 不写分区，重启即离开这套内核；
   即使进入 `QUARANTINE`，CPU 显示与 0090 触摸路径仍按原样工作。
+
+## 9. 已实现（0106，默认关闭）
+
+`0106-polaris-gx-m0b-power-request.patch`（+98 行，只改 `bsd/dev/polaris_gpu.c`）：
+
+- 独立开关 **`polarisgxm0b=1`**——探测（`polarisgxprobe=1`）永远不会引发写入，两个开关必须同时给；
+- 进入条件：探测完成且 `pg_gx_decide()` 返回 `PG_GX_WRITE_REQ`，否则一行都不写；
+- 写 `GMU_RSCC_CONTROL_REQ` bit1 → 每 1 ms 轮询 `CONTROL_ACK` bit1，最多 20 次；
+- 无论结果如何**都撤销**（清 bit1），再等 ACK 落回 0，最多 20 ms；
+- 三种收尾：`done`（请求—应答—撤销闭合）、`no acknowledge`（提示查 `PDC_GPU_ENABLE` bit0）、
+  `acknowledge did not fall`（隔离，且禁止后续阶段）；
+- `dsb sy` 只对 aarch64 生成（主机 x86 测试不需要，也不该假装需要）。
+
+本地验证（不需要设备）：真头文件 `-Weverything -Werror` 编译通过；主机 gate 7 个场景、校验器
+全部断言、aarch64-macos 交叉编译、哈希桩全部通过——`tools/gate/kernel.c` 为此补了 `delay()` 桩。
+
+**注意 §7 的第一条仍在**：`PDC_GPU_ENABLE` bit0 当前是 0。若真机上 ACK 不动，日志会明确提示
+那一点，那时才讨论对 `PDC_GPU_ENABLE` 做同样"一位、可逆、有回读"的写。

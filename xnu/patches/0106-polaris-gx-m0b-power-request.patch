@@ -1,0 +1,155 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -195,6 +195,8 @@
+  * and if it aborts, the console ring still holds the values that did arrive.
+  */
+ #define POLARIS_GMU_PA      0x0506a000ULL
++#define POLARIS_GMU_REQ_PA  0x0508ec1cULL	/* GMU_RSCC_CONTROL_REQ */
++#define POLARIS_GMU_ACK_PA  0x0508ec20ULL	/* GMU_RSCC_CONTROL_ACK */
+ #define POLARIS_GMU_SIZE    0x00030000ULL
+ #define POLARIS_PDC_PA      0x0b200000ULL
+ /* Vendor DT: 0x0b200000 + 0x300000. 0x30000 puts 0x0b284500 outside and
+@@ -219,8 +221,13 @@
+ 	{ "GMU_RSCC_CONTROL_ACK",    0x0508ec20ULL,  1 },
+ };
+ 
++/* Filled by polaris_gx_readonly_probe(); read by the decision and by M0b. */
++static struct pg_gx_state polaris_gx_last;
++static bool polaris_gx_last_valid;
++
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void ml_io_unmap(vm_offset_t, vm_size_t);
++extern void delay(int);	/* microseconds in XNU; M0b waits in 1 ms steps */
+ 
+ static bool
+ polaris_gx_in_window(uint64_t pa)
+@@ -242,6 +249,8 @@
+ 	struct pg_gx_state gx = { false, 0, 0, 0, 0, 0 };
+ 	bool complete = true;
+ 
++	polaris_gx_last_valid = false;
++
+ 	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
+ 	pdc = ml_io_map((vm_offset_t)POLARIS_PDC_PA, (vm_size_t)POLARIS_PDC_SIZE);
+ 	if (gmu == 0 || pdc == 0) {
+@@ -298,6 +307,8 @@
+ 	 */
+ 	if (complete) {
+ 		gx.firmware_proven = true;	/* the probe runs only after the digests matched */
++		polaris_gx_last = gx;
++		polaris_gx_last_valid = true;
+ 		printf("POLARIS GPU: gx decision: %s (plan only; nothing written)\n",
+ 		    pg_gx_action_name(pg_gx_decide(&gx)));
+ 	}
+@@ -310,6 +321,91 @@
+ }
+ 
+ /*
++ * M0b: the first write this port makes to hardware, and it is one bit.
++ *
++ * research/polaris/m0b-gx-power-request.zh-CN.md fixes the shape: snapshot, set
++ * GMU_RSCC_CONTROL_REQ bit1, wait up to 20 ms for CONTROL_ACK bit1, snapshot
++ * again, clear the request, wait for the acknowledge to fall, and report. The
++ * request is withdrawn immediately because this port owns no clock vote and no
++ * GMU firmware - leaving GX powered on our behalf would be a decision about a
++ * domain we do not own.
++ *
++ * The outcome that stops everything: acknowledge rises and does not fall. That
++ * would mean we can ask for power but not give it back, and no later stage may
++ * run on top of that.
++ */
++#define POLARIS_M0B_WAIT_MS	20u
++
++static void
++polaris_gx_m0b(void)
++{
++	vm_offset_t gmu;
++	volatile uint32_t *req, *ack;
++	uint32_t before, i;
++	bool acked = false, cleared = false;
++
++	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	if (gmu == 0) {
++		printf("POLARIS GPU: m0b refused; GMU window map failed\n");
++		return;
++	}
++	req = (volatile uint32_t *)(uintptr_t)(gmu +
++	    (POLARIS_GMU_REQ_PA - POLARIS_GMU_PA));
++	ack = (volatile uint32_t *)(uintptr_t)(gmu +
++	    (POLARIS_GMU_ACK_PA - POLARIS_GMU_PA));
++
++	printf("POLARIS GPU: m0b pre: ack 0x%08x req 0x%08x busy 0x%08x pdc 0x%08x seq 0x%08x\n",
++	    polaris_gx_last.control_ack, polaris_gx_last.control_req,
++	    polaris_gx_last.seq_busy, polaris_gx_last.pdc_enable,
++	    polaris_gx_last.seq_start);
++
++	before = *req;
++	*req = before | PG_GX_BIT_ON;
++#if defined(__aarch64__)
++	/* Device-nGnRnE orders the store; dsb waits for it to complete. */
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: m0b set req 0x%08x -> 0x%08x\n", before, *req);
++
++	for (i = 0; i < POLARIS_M0B_WAIT_MS; i++) {
++		delay(1000);	/* 1 ms */
++		if ((*ack & PG_GX_BIT_ON) != 0) {
++			acked = true;
++			break;
++		}
++	}
++	printf("POLARIS GPU: m0b ack 0x%08x after %u ms\n", *ack, (unsigned)(i + 1));
++
++	printf("POLARIS GPU: m0b post: ack 0x%08x req 0x%08x\n", *ack, *req);
++
++	/* Withdraw the request whatever happened above: no state is kept. */
++	*req = *req & ~PG_GX_BIT_ON;
++#if defined(__aarch64__)
++	/* Device-nGnRnE orders the store; dsb waits for it to complete. */
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: m0b cleared req -> 0x%08x\n", *req);
++
++	for (i = 0; i < POLARIS_M0B_WAIT_MS; i++) {
++		delay(1000);
++		if ((*ack & PG_GX_BIT_ON) == 0) {
++			cleared = true;
++			break;
++		}
++	}
++	printf("POLARIS GPU: m0b ack 0x%08x after %u ms\n", *ack, (unsigned)(i + 1));
++
++	if (acked && cleared) {
++		printf("POLARIS GPU: m0b done: request/ack/clear closed, GX back to off\n");
++	} else if (!acked) {
++		printf("POLARIS GPU: m0b quarantined: no acknowledge; check PDC_GPU_ENABLE bit0\n");
++	} else {
++		printf("POLARIS GPU: m0b quarantined: acknowledge did not fall; no powered state owned\n");
++	}
++	/* No unmap: same reason as the probe - it panics in vm_map_delete here. */
++}
++
++/*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+  * No stages after the board stage have a backend in this revision.
+@@ -326,11 +422,19 @@
+ 		if (stage == POLARIS_GPU_FIRMWARE) {
+ 			int probe = 0;
+ 
++			int m0b = 0;
++
+ 			/* Opt-in and read-only; reached only after the digests matched. */
+ 			PE_parse_boot_argn("polarisgxprobe", &probe, sizeof(probe));
+ 			if (probe) {
+ 				polaris_gx_readonly_probe();
+ 			}
++			/* The write has its own switch: probing must never cause one. */
++			PE_parse_boot_argn("polarisgxm0b", &m0b, sizeof(m0b));
++			if (probe && m0b && polaris_gx_last_valid &&
++			    pg_gx_decide(&polaris_gx_last) == PG_GX_WRITE_REQ) {
++				polaris_gx_m0b();
++			}
+ 		}
+ 		printf("POLARIS GPU: %s backend not implemented; no hardware access\n",
+ 		    polaris_gpu_stage_name[stage]);
