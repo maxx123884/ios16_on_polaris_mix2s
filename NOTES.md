@@ -317,7 +317,20 @@ The code itself cannot be copied: `mi8_a630_hw_init.inc` is GPL-2.0-only (180 in
 CP protect entries, all Linux-derived) and that project's own legal note says APSL 2.0 and GPL are incompatible,
 so it ships sources only. What is portable is the technique and the same public sources it cites (Linux
 `gdsc.c`, `gpucc-sdm845.c`, `cmd-db.c`), which is how this project works anyway. Plan recorded in
-`m1a-dipper-reference-assessment.zh-CN.md`.What the day did buy: nine reads
+`m1a-dipper-reference-assessment.zh-CN.md`.
+
+**A correction first, because the repo now says it:** `polariscpu=1` does nothing on the phone. The kernel
+built from 0117 contains the string "cpu report unavailable in host build", which means the *stub* branch was
+compiled - `bsd/dev` is not built with `MACH_KERNEL_PRIVATE`, so `processor_array` and the private `struct
+processor` are not even declared there. That also explains why 0116 failed the build and why 0117 "fixed" it
+without fixing anything: with the macro absent, only the stub exists to compile. The README row has been
+corrected; closing that gap needs a path that does not depend on kernel-private headers.
+
+**M1a steps 1 and 2 then ran on the phone** (2026-11-24 00:56, `polarisgxm1=2`): `gcc_gpu_cfg_ahb_clk` reads
+0x1 so bit31 is clear and GPUCC access is safe, `apps_vote0` has GPLL0 in bit15, and `memnoc`, `snoc`,
+`cx_gmu`, `cxo` all read bit31 set - every GPU clock is off, the GMU clock source is parked at ROOT_OFF,
+`cx_hw_ctrl` bit31 is 0 and both GDSCRs are collapsed. Nothing is on and nothing is half-on: the clean state
+before the first GPUCC write.What the day did buy: nine reads
 settled both routes, which is cheaper and cleaner than the information M0b and M0c bought with writes.
 
 **Then the CPU row got its evidence, and a probe to close the rest of it.** The 22:35 ring shows the shim
