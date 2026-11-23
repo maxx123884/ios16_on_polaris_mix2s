@@ -267,3 +267,46 @@ if (acked) { 轮询 bit16 … } else { 打印 "sleep skipped: GX never woke" }
 ```
 
 同一个假阳性在这个文件里出现过一次就够，`0113` 把产生它的路径也去掉。
+
+## 16. TCS 读数与结论（2026-11-23 21:06，`0113`）
+
+```
+m0c loaded: enable 0x80000001 pdcseq 0xfebea1e1 rsccseq 0xa7a506a0
+m0c tcs before req: tcs0 0x00000001 tcs1 0x00000000 tcs3 0x00000000 busy 0x00000000 status0 0x01000000
+m0c ack 0x00000000 after 101 ms
+m0c tcs after req:  tcs0 0x00000001 tcs1 0x00000000 tcs3 0x00000000 busy 0x00000000 status0 0x01000000
+m0c sleep skipped: GX never woke (status0 0x01000006)
+m0c quarantined: sequencer still busy (0x00000001); ucode left loaded, PDC disabled
+```
+
+### 三条结论
+
+1. **没有 TCS 卡住**。`tcs0` bit0 = 1 是"完成"语义（厂商 `a6xx_complete_rpmh_votes()`
+   等的就是这一位），`tcs1`/`tcs3` 全 0。所以不是"命令发出去没人接"。
+2. **定序器根本没启动**：请求前后 `busy` 都是 0。上一轮看到的 `busy=1` 是**清微码**造成的，
+   不是请求造成的——这条纠正很重要，否则会一直追"序列卡在哪"。
+3. **`PDC_GPU_ENABLE = 0` 会触发一个完不成的收尾**：清使能之后 `busy` 变成 1。
+   所以这个位不是"总开关"，关它反而会起动作。
+
+### 为什么这条路走不通
+
+微码装好了、TCS 就位、`REQ bit1` 也写进去了，**RSC 却没有为它启动任何东西**。缺的是
+"序列能生效的前置"，而不是序列本身。按厂商代码，`a6xx_rpmh_power_on_gpu()` 是在
+`rpmh_gpu_pwrctrl()` 通过 **RPMh 命令**投过 `gfx.lvl` 等票之后才被调用的——那张票在
+XNU 里不存在，所以 PDC 即使匹配上也没有可开的东西。
+
+要在 XNU 里补这张票，需要 AOSS **command DB**（`cmd_db`）、RPMh driver、以及 TCS 命令的
+地址/数据表——那是另一个项目量级，不是本 bring-up 的下一步。
+
+### 因此
+
+- **PDC 直连上电：判死**（在本项目范围内）。证据链完整：窗口可写 → 微码可装 → 值可读回 →
+  TCS 完成 → 请求无应答 → 定序器未启动 → 缺 RPMh 投票。
+- 仍然有效并保留的成果：窗口可写性、1.3 s 节奏约束、`REQ/ACK` 两级实验、以及
+  `pg_gx_decide()` 那套"测量决定能不能写"的门。
+- 想继续 GPU 方向，只剩 GMU/HFI 路线（需要 PAS/固件装载 + SMMU + HFI 通道），
+  工作量远大于今天做的这些，且要先解决 `pd` 与 TZ 的权限问题。
+
+### 留存的副作用
+
+`PDC_GPU_ENABLE=0` 之后 `busy=1` 残留，需冷启动由 XBL 复位；实测重启后 iOS 正常，无持久影响。

@@ -272,6 +272,20 @@ acknowledge had risen first), and the restore path clear the ucode even while `S
 fixing before the next write. The next step is reads, not writes: the `RSCC_TCS0..3_DRV0_STATUS` block to see
 which TCS the sequencer is stuck on.
 
+**The TCS reads close it** (2026-11-23 21:06, 0113): `tcs0 0x1` is the completion bit the vendor's
+`a6xx_complete_rpmh_votes()` waits for, `tcs1`/`tcs3` are 0, and `busy` is 0 both before and after the
+request - so the sequencer never started. The `busy=1` seen in the previous run came from my clearing the
+ucode, not from the request: worth stating, because it sent the investigation after a stuck sequence that was
+never running. Disabling `PDC_GPU_ENABLE` does start something that never finishes (`busy` goes to 1), so that
+bit is not a plain master switch.
+
+So the sequence is installed, the TCS bank is complete, the request lands, and the RSC starts nothing: what is
+missing is the precondition, not the program. The vendor calls `a6xx_rpmh_power_on_gpu()` only after
+`rpmh_gpu_pwrctrl()` has voted `gfx.lvl` over **RPMh**, and this port has no RPMh driver, no `cmd_db`, and no
+command table. That is a different size of project. PDC-only GX power-on is therefore closed for this
+bring-up, with a complete evidence chain: writable windows -> installable ucode -> values read back -> TCS
+complete -> request unanswered -> sequencer never started -> the vote is missing.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 
