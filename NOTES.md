@@ -286,6 +286,15 @@ command table. That is a different size of project. PDC-only GX power-on is ther
 bring-up, with a complete evidence chain: writable windows -> installable ucode -> values read back -> TCS
 complete -> request unanswered -> sequencer never started -> the vote is missing.
 
+**Next front, and this one starts with a read** (`0114`, `polarisgmgmu=1`): the vendor calls
+`a6xx_rpmh_power_on_gpu()` from the GMU boot path, so the real order is "GMU runs, GMU asks the RSC for GX" -
+pressing the bell with no owner is what M0b did. So before any GMU code, the question is whether the block is
+even alive: `GPU_CC_CX_GDSCR`/`GX_GDSCR` collapse bits, `GMU_CM3_SYSRESET`, `CM3_CFG`, the power counter and
+the host interrupt pair, all read-only. Two independent checks on the maths: `GX_GDSCR` converts to
+`0x0509100c` and `CX_GDSCR` to `0x0509106c`, exactly the offsets the bring-up contract already records. The
+verdict table decides whether M1a (GMU firmware and HFI) is worth designing at all, or whether CX is off and
+the same missing vote closes this door too.
+
 
 ## Agent handoff / active work (2026-10-15, latest)
 

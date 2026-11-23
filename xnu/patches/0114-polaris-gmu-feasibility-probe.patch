@@ -1,0 +1,99 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -756,6 +756,75 @@
+ /* Filled by polaris_gx_readonly_probe(); read by the decision and by M0b. */
+ 
+ /*
++ * M1 feasibility, read-only: is the GMU alive at all?
++ *
++ * PDC-only power-on is closed (m0c section 16) because nothing votes gfx.lvl.
++ * The GMU is the other way in: it runs in the CX domain and asks the RSC for GX
++ * itself, which is why the vendor calls a6xx_rpmh_power_on_gpu() from the GMU
++ * boot path. Before writing anything, three questions can be answered by reads:
++ *
++ *   - is CX powered (GDSCR status bits, and a slave id that is not all-ones)?
++ *   - does the GMU's Cortex-M3 look out of reset (CM3_SYSRESET, CM3_CFG)?
++ *   - are the host interrupt registers sane (they should be quiet, not poison)?
++ *
++ * Everything here is read-only. Offsets are a6xx_reg.h indices converted with the
++ * same two window rules as the probe; GX_GDSCR lands on 0x0509100c, the address
++ * the bring-up contract already records, which is a useful check on the maths.
++ */
++#define POLARIS_GDSCR_CX_PA	0x0509106cULL	/* index 0x2441b, contract +0x106c */
++#define POLARIS_GDSCR_GX_PA	0x0509100cULL	/* index 0x24403, contract +0x100c */
++#define POLARIS_GMU_CM3_SYSRESET_PA	0x0507e000ULL	/* index 0x1F800 */
++#define POLARIS_GMU_CM3_CFG_PA		0x0507e0b4ULL	/* index 0x1F82D */
++#define POLARIS_GMU_PWR_COUNTER_PA	0x0507e100ULL	/* index 0x1F840 */
++#define POLARIS_GMU_GMU2HOST_INFO_PA	0x0507e648ULL	/* index 0x1F992 */
++#define POLARIS_GMU_HOST2GMU_SET_PA	0x0507e650ULL	/* index 0x1F994 */
++#define POLARIS_GMU_AO_INTR_STATUS_PA	0x0508ec14ULL	/* index 0x23B05 */
++#define POLARIS_GMU_AO_AHB_FENCE_PA	0x0508ec40ULL	/* index 0x23B10 */
++
++static void
++polaris_gx_m1_probe(void)
++{
++	vm_offset_t gmu;
++	uint32_t cx, gx, sysreset, cfg, counter, info, set, aointr, fence;
++
++	gmu = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	if (gmu == 0) {
++		printf("POLARIS GPU: m1 refused; GMU window map failed\n");
++		return;
++	}
++	cx = *polaris_m0c_word(gmu, gmu, POLARIS_GDSCR_CX_PA);
++	gx = *polaris_m0c_word(gmu, gmu, POLARIS_GDSCR_GX_PA);
++	sysreset = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_CM3_SYSRESET_PA);
++	cfg = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_CM3_CFG_PA);
++	counter = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_PWR_COUNTER_PA);
++	info = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_GMU2HOST_INFO_PA);
++	set = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_HOST2GMU_SET_PA);
++	aointr = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_AO_INTR_STATUS_PA);
++	fence = *polaris_m0c_word(gmu, gmu, POLARIS_GMU_AO_AHB_FENCE_PA);
++
++	printf("POLARIS GPU: m1 gdsc cx 0x%08x gx 0x%08x\n", cx, gx);
++	printf("POLARIS GPU: m1 gmu sysreset 0x%08x cfg 0x%08x counter 0x%08x\n",
++	    sysreset, cfg, counter);
++	printf("POLARIS GPU: m1 gmu intr info 0x%08x set 0x%08x ao 0x%08x fence 0x%08x\n",
++	    info, set, aointr, fence);
++
++	/*
++	 * GDSCR tells the story without guessing: bit0 is the software collapse
++	 * request, and 0x1 in the status field means the domain is off. All-ones on
++	 * a slave read means nothing answered on the bus.
++	 */
++	if (cx == 0xffffffffu || gx == 0xffffffffu) {
++		printf("POLARIS GPU: m1 verdict: GDSCR reads all ones; GPUCC not answering\n");
++	} else if ((cx & 0x1u) != 0 || (gx & 0x1u) != 0) {
++		printf("POLARIS GPU: m1 verdict: a GDSC is collapsed (cx bit0 %u, gx bit0 %u)\n",
++		    cx & 1u, gx & 1u);
++	} else {
++		printf("POLARIS GPU: m1 verdict: both GDSCs out of collapse; GMU block readable\n");
++	}
++	/* No unmap, as everywhere else in this file. */
++}
++
++/*
+  * Only an acquired resource may be released. Resource-specific release
+  * callbacks must be installed before ANY power or mapping code is enabled.
+  * No stages after the board stage have a backend in this revision.
+@@ -770,7 +839,7 @@
+ 	}
+ 	if (stage != POLARIS_GPU_BOARD) {
+ 		if (stage == POLARIS_GPU_FIRMWARE) {
+-			int probe = 0;
++			int probe = 0, m1 = 0;
+ 
+ 			int m0b = 0;
+ 
+@@ -779,6 +848,11 @@
+ 			if (probe) {
+ 				polaris_gx_readonly_probe();
+ 			}
++			/* Read-only GMU feasibility check, its own opt-in as well. */
++			PE_parse_boot_argn("polarisgmgmu", &m1, sizeof(m1));
++			if (probe && m1 != 0) {
++				polaris_gx_m1_probe();
++			}
+ 			/* The write has its own switch: probing must never cause one. */
+ 			PE_parse_boot_argn("polarisgxm0b", &m0b, sizeof(m0b));
+ 			if (probe && m0b >= 1 && polaris_gx_last_valid &&
