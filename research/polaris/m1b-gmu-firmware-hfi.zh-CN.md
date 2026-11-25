@@ -92,3 +92,36 @@ m1a clocks undone: cx hw_ctrl 0x00005ff4 memnoc 0x80004220 snoc 0x80000000 cxo 0
 **如果是 XBL 装好并已运行固件**，那么 `FW_INIT_RESULT` 很可能是成功值、`HFI_CTRL_STATUS` 可能有非零位——
 那就意味着我们离"M1c 建 HFI 队列 + 让 GMU 请求 GX"只差地址空间（SMMU/IOVA）这一层。
 如果全是 0，则说明固件装进去了但从未启动（等我们释放复位），回到原计划第 11 步。
+
+## 7. 实测（2026-11-26 01:10，`polarisgxm1=6`）——固件在，但从未运行
+
+```
+m1b CM3_SYSRESET       0x00000001
+m1b CM3_BOOT_CONFIG    0x00000000
+m1b CM3_FW_INIT_RESULT 0x00000000
+m1b HFI_SFR_ADDR       0x00000000
+m1b HFI_QTBL_INFO      0x00000000
+m1b HFI_QTBL_ADDR      0x00000000
+m1b HFI_CTRL_STATUS    0x00000000
+m1b HFI_CTRL_INIT      0x00000000
+m1b verdict: fw_init_result 0x00000000 (zero), hfi_status 0x00000000 (zero)
+```
+
+- `SYSRESET` bit0 = 1：**CM3 被按在复位里**；
+- `BOOT_CONFIG = 0`：启动配置没设；
+- `FW_INIT_RESULT = 0`、HFI 全 0：**固件从未执行**，队列从未建立。
+
+结合 ITCM 里有内容，图景完整了：**XBL 把固件装进 ITCM，然后把 CM3 按在复位里交给我们**。
+这正是"等下一级启动"的状态，也解释了为什么之前所有读都是 0——不是坏了，是没启动。
+
+## 8. 下一步（`polarisgxm1=7`）：放开复位
+
+两笔写，顺序与 dipper 的启动表一致：
+
+1. `BOOT_CONFIG(0x5001) = 0x2`；
+2. `SYSRESET(0x5000) = 原值 & ~1`（放开复位）；
+3. 轮询 `FW_INIT_RESULT(0x501c)`，最多 50 ms，非 0 即表示固件自检通过；
+4. 读 `HFI_CTRL_STATUS(0x5180)` 看队列是否建立。
+
+**收尾重按复位并还原 `BOOT_CONFIG`**，所以失败也不留半开状态。
+最坏情况是 CM3 起来后跑飞、总线卡住——那时需要断电重启，属可接受代价。

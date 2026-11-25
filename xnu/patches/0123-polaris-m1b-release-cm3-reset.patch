@@ -1,0 +1,107 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1082,9 +1082,84 @@
+ 	    hfi, hfi != 0 ? "non-zero" : "zero");
+ }
+ 
++/*
++ * M1b step 11: let the CM3 out of reset.
++ *
++ * Read-only evidence says the firmware is staged in ITCM but the core is held with
++ * SYSRESET bit0 set, so FW_INIT_RESULT is zero and no HFI queue was ever built. Two
++ * writes turn that around: the boot configuration (0x2, the value the dipper port
++ * uses) and then clearing the reset bit. Both are put back afterwards - the reset is
++ * asserted again and the configuration restored - so a failed attempt leaves the GPU
++ * exactly as XBL handed it over.
++ *
++ * The always-on counter keeps running either way: it lives in the AON domain and is
++ * driven by CXO, so it says the block is powered and clocked, not that the CM3 runs.
++ */
++#define POLARIS_GMU_SYSRESET	0x5000u
++#define POLARIS_GMU_BOOTCFG	0x5001u
++#define POLARIS_GMU_FWINIT	0x501cu
++#define POLARIS_GMU_HFISTATUS	0x5180u
++
++static void
++polaris_gx_m1b_boot(vm_offset_t gmuwin)
++{
++	uint32_t sr_before = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u);
++	uint32_t bc_before = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u);
++	uint32_t fw = 0, waited;
++	bool ran = false;
++
++	printf("POLARIS GPU: m1b boot before: sysreset 0x%08x bootcfg 0x%08x\n",
++	    sr_before, bc_before);
++	if ((sr_before & 1u) == 0) {
++		printf("POLARIS GPU: m1b boot: reset is already released, not touched\n");
++		return;
++	}
++
++	printf("POLARIS GPU: m1b boot write bootcfg 0x%08x\n", 0x2u);
++	delay(1300000);
++	*(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u) = 0x2u;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++
++	printf("POLARIS GPU: m1b boot release reset (sysreset 0x%08x)\n", sr_before & ~1u);
++	delay(1300000);
++	*(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u) = sr_before & ~1u;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++
++	/* give the firmware a moment, then look */
++	for (waited = 0; waited <= 50000; waited += 500) {
++		fw = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_FWINIT * 4u);
++		if (fw != 0) {
++			ran = true;
++			break;
++		}
++		delay(500);
++	}
++	printf("POLARIS GPU: m1b boot after: sysreset 0x%08x bootcfg 0x%08x fw_init 0x%08x hfi 0x%08x: %s\n",
++	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u),
++	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u),
++	    fw, *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_HFISTATUS * 4u),
++	    ran ? "FW_INIT non-zero - the CM3 ran" : "FW_INIT still zero after 50 ms");
++
++	/* put it back the way XBL left it */
++	printf("POLARIS GPU: m1b boot restore sysreset 0x%08x bootcfg 0x%08x\n",
++	    sr_before, bc_before);
++	delay(1300000);
++	*(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u) = sr_before;
++	delay(1300000);
++	*(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u) = bc_before;
++	delay(1);
++	printf("POLARIS GPU: m1b boot restored: sysreset 0x%08x bootcfg 0x%08x\n",
++	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u),
++	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u));
++}
++
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+-    bool state_report)
++    bool state_report, bool boot_cm3)
+ {
+ 	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
+ 	uint32_t v, waited;
+@@ -1166,6 +1241,9 @@
+ 	if (state_report) {
+ 		polaris_gx_m1b_state(gmuwin);
+ 	}
++	if (boot_cm3) {
++		polaris_gx_m1b_boot(gmuwin);
++	}
+ 	if (itcm_test) {
+ 		volatile uint32_t *itcm = (volatile uint32_t *)(uintptr_t)(gmuwin + 0xc00u * 4u);
+ 		uint32_t old0 = itcm[0], old1 = itcm[1];
+@@ -1263,7 +1341,7 @@
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+ 	if (step >= 4) {
+-		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6);
++		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step >= 7);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}

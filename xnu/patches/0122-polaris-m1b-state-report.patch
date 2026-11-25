@@ -1,0 +1,75 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1039,8 +1039,52 @@
+ 	return false;
+ }
+ 
++/*
++ * M1b: ask the GMU how far it got, read-only.
++ *
++ * The ITCM test showed real instruction words already in place, so the firmware was
++ * staged before this port ran - which means the useful question is no longer "can we
++ * load it" but "did it ever run". These are the registers that answer it, at the word
++ * offsets the dipper port and a6xx_gmu.xml agree on.
++ */
+ static void
+-polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test)
++polaris_gx_m1b_state(vm_offset_t gmuwin)
++{
++	static const struct {
++		const char *name;
++		uint32_t word;
++	} regs[] = {
++		{ "CM3_SYSRESET", 0x5000 },
++		{ "CM3_BOOT_CONFIG", 0x5001 },
++		{ "CM3_FW_INIT_RESULT", 0x501c },
++		{ "HFI_SFR_ADDR", 0x5182 },
++		{ "HFI_QTBL_INFO", 0x5184 },
++		{ "HFI_QTBL_ADDR", 0x5185 },
++		{ "HFI_CTRL_STATUS", 0x5180 },
++		{ "HFI_CTRL_INIT", 0x5186 },
++	};
++	unsigned i;
++	uint32_t fw = 0, hfi = 0;
++
++	for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
++		uint32_t v = *(volatile uint32_t *)(uintptr_t)(gmuwin + regs[i].word * 4u);
++
++		if (regs[i].word == 0x501cu) {
++			fw = v;
++		}
++		if (regs[i].word == 0x5180u) {
++			hfi = v;
++		}
++		printf("POLARIS GPU: m1b %-18s 0x%08x\n", regs[i].name, v);
++	}
++	printf("POLARIS GPU: m1b verdict: fw_init_result 0x%08x (%s), hfi_status 0x%08x (%s)\n",
++	    fw, fw != 0 ? "non-zero" : "zero",
++	    hfi, hfi != 0 ? "non-zero" : "zero");
++}
++
++static void
++polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
++    bool state_report)
+ {
+ 	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
+ 	uint32_t v, waited;
+@@ -1119,6 +1163,9 @@
+ 	 * the M3's reset. ITCM starts at GMU word 0xc00 (0x1b400 less the 0x1a800 of
+ 	 * the GMU block), which is 0x0506d000 in physical terms.
+ 	 */
++	if (state_report) {
++		polaris_gx_m1b_state(gmuwin);
++	}
+ 	if (itcm_test) {
+ 		volatile uint32_t *itcm = (volatile uint32_t *)(uintptr_t)(gmuwin + 0xc00u * 4u);
+ 		uint32_t old0 = itcm[0], old1 = itcm[1];
+@@ -1216,7 +1263,7 @@
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+ 	if (step >= 4) {
+-		polaris_gx_m1a_clocks(gcc, gpucc, step >= 5);
++		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}
