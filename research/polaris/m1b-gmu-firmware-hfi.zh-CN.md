@@ -55,3 +55,40 @@ HFI 需要**共享内存和地址空间**（队列表 + 两个队列），也就
 M1c 才是"GPU 真正跑起来"：SMMU 建域、HFI 建队列、让 GMU 自己去请求 GX。
 那需要 IOVA 分配、页表、以及 Mesa/freedreno 的用户态接口——**这是另一个量级**。
 M1b 只回答一个问题：**这块 SoC 的 GMU 能不能被我们喂活**。
+
+## 6. 实测（2026-11-26 00:58，`polarisgxm1=5`）——计划要改
+
+```
+m1a gmu counter 22564 then 44360 over 1 ms: RUNNING - the GMU is alive
+m1b itcm was 0x2823b094 0x9f890846
+m1b itcm wrote 0x5eed0001 0x5eed0002, read 0x5eed0001 0x5eed0002: writable and readable
+m1b itcm restored 0x2823b094 0x9f890846: as found
+m1a clocks undone: cx hw_ctrl 0x00005ff4 memnoc 0x80004220 snoc 0x80000000 cxo 0x80000000 gmu 0x80004ff0
+```
+
+**ITCM 不是空的**：`0x2823b094 0x9f890846` 是真实的指令字，不是未初始化值，也不是 0。
+这说明 **XBL 在交付前已经把 `a630_gmu.bin` 装进 GMU 的指令内存**，并且计数器在跑。
+
+于是本文档第 2 节的"装 32 KiB 固件"这一步**可能整步都不需要**：
+
+| 原计划 | 现在 |
+|---|---|
+| 第 9 步：写 2 字验证可写 | ✅ 已验证（可写、可读、还原精确） |
+| 第 10 步：装 32 KiB 并逐字比对 | ❓ **可能不需要**——固件已在里面 |
+| 第 11 步：释放复位看 `FW_INIT_RESULT` | ← **这才是下一步** |
+
+### 下一步（`polarisgxm1=6`，纯只读）
+
+在 CX 上电 + 时钟打开的状态下，读三组寄存器问它"活到哪一步"：
+
+| 寄存器 | word | 地址 | 判读 |
+|---|---|---|---|
+| `GMU_CM3_FW_INIT_RESULT` | `0x501c` | `0x0507e070` | 固件自检结果，非 0 才算起来 |
+| `GMU_CM3_BOOT_CONFIG` | `0x5001` | `0x0507e004` | 启动配置（位含义按 a6xx_gmu） |
+| `GMU_HFI_CTRL_STATUS` | `0x5180` | `0x0507e600` | HFI 队列是否就绪 |
+| `GMU_HFI_QTBL_INFO/ADDR` | `0x5184/0x5185` | `0x0507e610/14` | 队列表是否已由固件写好 |
+| `GMU_CM3_SYSRESET` | `0x5000` | `0x0507e000` | 复位状态（读 0 的含义要按 a6xx 定义确认） |
+
+**如果是 XBL 装好并已运行固件**，那么 `FW_INIT_RESULT` 很可能是成功值、`HFI_CTRL_STATUS` 可能有非零位——
+那就意味着我们离"M1c 建 HFI 队列 + 让 GMU 请求 GX"只差地址空间（SMMU/IOVA）这一层。
+如果全是 0，则说明固件装进去了但从未启动（等我们释放复位），回到原计划第 11 步。
