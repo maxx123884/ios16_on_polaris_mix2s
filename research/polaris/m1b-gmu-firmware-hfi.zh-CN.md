@@ -176,3 +176,42 @@ HFI 队列表写入共享区——这一切都要在碰 `SYSRESET` 之前完成�
 | `CB0_SCTLR/TTBR0/TCR/FSR` | `0x1000/0x1020/0x1030/0x1058` | 上下文 bank 0 是否启用、页表在哪 |
 
 这决定了 M1c 是"在现成框架上加一张表"，还是"从零建一整套翻译"。
+
+## 11. 实测（2026-11-26 01:34，`polarisgxm1=8`）——SMMU 是关的，M1c 因此小得多
+
+```
+m1c smmu: id0 0x48016605 id1 0x20008005 scr0 0x00200626 (translation off) sacr 0x00000000 sgfsr 0x00000000
+m1c smmu: smr0 0x00000000 s2cr0 0x000200ff (type 3, cb 15) cb0_sctlr 0x00000000
+m1c smmu: cb0_ttbr0 0x00000000 cb0_tcr 0x00000000 cb0_fsr 0x00000000
+```
+
+- `IDR0 = 0x48016605`、`IDR1 = 0x20008005`：ARM SMMU v2（400 系列），支持 4 KiB 粒度、两阶段翻译；
+- **`SCR0` bit0 = 0：翻译关闭**，所有访问走物理地址（bypass）；
+- `S2CR0 = 0x000200ff`：流 0 的 TYPE = 2（fault），CB = 0xf（无上下文）；但翻译关着时这不生效；
+- 上下文 bank 0 的 `SCTLR/TTBR0/TCR/FSR` 全 0：从未被启用；
+- `SGFSR = 0`：**没有发生过全局错误**（说明之前的挂死不是 SMMU fault）。
+
+### 这改变了 M1c 的工作量
+
+| 原来以为 | 实际 |
+|---|---|
+| 要在 XNU 里建 SMMU 域、页表、IOVA 分配 | **不需要**：翻译关着，GMU 用物理地址 |
+| 需要 DRM/IOMMU 框架 | 不需要 |
+| 只需 | 分配一块物理连续内存 → 写 HFI 队列表 → 把**物理地址**写进 `HFI_QTBL_ADDR`/`HFI_SFR_ADDR` → 再放开复位 |
+
+这也解释了 `=7` 的挂死：`HFI_QTBL_ADDR` 与 `SFR_ADDR` 都是 0，固件起来后按 0 去找队列，
+那不是我们给它的内存——它要么等一个永远不来的回应，要么踩到不该踩的地方。
+
+### M1c 的具体步骤（下一步）
+
+1. 在 XNU 里分配**物理连续**内存（`kmem_alloc_contig` 或静态预留），大小按 HFI 表 + 两个队列算（几 KiB）；
+2. 按 `a6xx_hfi` 的布局写：
+   - `hfi_queue_table_header`（version、size、队列数、write/read index 偏移）；
+   - 入口 0（host→GMU 命令队列）、入口 1（GMU→host 回应队列），各带 `queue_header`
+     （type、id、prio、read/write index）；
+3. 写 `GMU_HFI_QTBL_INFO = 队列数`、`GMU_HFI_QTBL_ADDR = 表物理地址`、`GMU_HFI_SFR_ADDR = 共享区物理地址`；
+4. **然后**才：`BOOT_CONFIG = 0x2` → 清 `SYSRESET` → 轮询 `FW_INIT_RESULT`；
+5. 若 `FW_INIT_RESULT` 非 0，再读 `HFI_CTRL_STATUS` 看固件是否建立了自己的队列。
+
+风险仍然存在：第 4 步可能再次挂死。但这次是**带着合法队列**去放核心，
+与 `=7` 那次"什么都不给就放"有本质区别——而且队列与地址都可以先读回校验。
