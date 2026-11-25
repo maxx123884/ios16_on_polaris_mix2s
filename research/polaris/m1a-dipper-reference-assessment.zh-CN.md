@@ -228,3 +228,28 @@ CX 有了电，但它那一半的时钟还是全关（`memnoc`/`snoc`/`cx_gmu`/`
 反过来如果两次相同，说明还差电压票或时钟源不对，M1b 不能开始。
 
 任何一步失败都 `goto undo`，不会把 CX 留在开着而时钟半开的状态。
+
+## 13. 实测：GMU 活着（2026-11-26 00:52，`polarisgxm1=4`，**本地内核**）
+
+```
+m1a clocks: cx on hw_ctrl 0x80001fe0
+m1a clk gcc_gpu_memnoc_gfx on: 0x00004221
+m1a clk gcc_gpu_snoc_dvm_gfx on: 0x00000001
+m1a clk gmu source: cmd 0x00000002 cfg 0x00000000: updated, root on
+m1a clk gpu_cc_cxo_clk on: 0x00000001
+m1a clk gpu_cc_cx_gmu_clk on: 0x00004ff1
+m1a gmu counter 22706 then 44505 over 1 ms: RUNNING - the GMU is alive
+m1a clocks undone: cx hw_ctrl 0x00005ff4 memnoc 0x80004220 snoc 0x80000000 cxo 0x80000000 gmu 0x80004ff0
+```
+
+- CX 上电（`hw_ctrl` bit31=1）；
+- 四个时钟逐个打开，**每个都靠自己的状态位确认**（CBCR bit31 落 0），不是假设；
+- GMU 时钟源 `RCG_CMD = 0x2`（`UPDATE|ROOT_EN`）后 `UPDATE` 与 `ROOT_OFF` 都落；
+- **AO 计数器 1 ms 内 22706 → 44505**：GMU 的硬件计数在走，时钟确实到达了那块逻辑；
+- 收尾逆序全部关回，`cx_hw_ctrl` 回到 `0x00005ff4`。
+
+**这条判据过了，M1b 可以开始。** 而且它顺带否定了"M1 探针看到的全 0 意味着 GMU 坏了"这个担忧——
+当时读到的 0 只是**没有时钟**，一上电一开钟，它就跑起来了。
+
+同一次还验证了另一件事：这个内核是**本地 macOS 虚拟机编的**（Xcode 15.4 + KDK），
+产出与 CI 的完全等价（同样 12,285,664 字节、同样含全部补丁标记），从此不受 GitHub 排队影响。
