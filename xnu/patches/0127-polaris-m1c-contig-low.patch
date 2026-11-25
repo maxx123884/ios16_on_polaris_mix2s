@@ -1,0 +1,60 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1267,6 +1267,9 @@
+ {
+ 	static struct polaris_hfi_blob *blob;
+ 	static vm_offset_t va;
++#if defined(KERNEL_PRIVATE)
++	kern_return_t kr;
++#endif
+ 	uint64_t pa;
+ 	uint32_t before_info, before_tbl, before_sfr;
+ 
+@@ -1278,30 +1281,24 @@
+ 		 * for the table at the wrong place, which is a good way to hang the bus.
+ 		 * The first page handed out was at 0x1_02e30000, hence the retry loop.
+ 		 */
+-		{
+-			unsigned int tries;
+-
+-			for (tries = 0; tries < 64; tries++) {
+-				void *cand = kalloc(POLARIS_HFI_PAGE);
+-				unsigned int pn;
+-
+-				if (cand == NULL) {
+-					break;
+-				}
+-				pn = pmap_find_phys(pmap_kernel(), (uint64_t)(uintptr_t)cand);
+-				if (pn != 0 && ((uint64_t)pn << PAGE_SHIFT) + POLARIS_HFI_PAGE <= 0x100000000ULL) {
+-					blob = (struct polaris_hfi_blob *)cand;
+-					break;
+-				}
+-				kfree(cand, POLARIS_HFI_PAGE);
+-			}
+-			if (blob == NULL) {
+-				printf("POLARIS GPU: m1c hfi: no page below 4 GiB after 64 tries\n");
+-				return;
+-			}
++#if defined(KERNEL_PRIVATE)
++		/*
++		 * kalloc never produced a page below 4 GiB (64 tries, all above), because the
++		 * free pool sits high. kmem_alloc_contig can be told the ceiling, which is the
++		 * only way to satisfy a 32-bit register. Declared through the private headers,
++		 * so this branch only exists in the real kernel build.
++		 */
++		kr = kmem_alloc_contig(kernel_map, &va, POLARIS_HFI_PAGE, PAGE_MASK, 0,
++		    0xFFFFFFFFULL, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_IOKIT);
++		if (kr != KERN_SUCCESS) {
++			printf("POLARIS GPU: m1c hfi: no page below 4 GiB (kmem_alloc_contig 0x%x)\n", kr);
++			return;
+ 		}
+-		va = (vm_offset_t)(uintptr_t)blob;
+-		bzero(blob, POLARIS_HFI_PAGE);
++		blob = (struct polaris_hfi_blob *)(uintptr_t)va;
++#else
++		printf("POLARIS GPU: m1c hfi: low-memory allocation is not visible to the host check\n");
++		return;
++#endif
+ 	}
+ 
+ 	{
