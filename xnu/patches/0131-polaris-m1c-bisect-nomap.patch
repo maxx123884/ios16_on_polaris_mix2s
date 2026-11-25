@@ -1,0 +1,16 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1470,6 +1470,13 @@
+ 		    (unsigned long long)pa);
+ 		return false;
+ 	}
++	/* Bisect: say where the table would go, map nothing. The guard keeps the rest
++	 * of the function reachable for the compiler while never running at all. */
++	printf("POLARIS GPU: m1c zap: would map 0x%llx, not mapping yet\n",
++	    (unsigned long long)pa);
++	if (pa != 0) {
++		return false;
++	}
+ 	page = ml_io_map((vm_offset_t)pa, (vm_size_t)POLARIS_HFI_PAGE);
+ 	if (page == 0) {
+ 		printf("POLARIS GPU: m1c zap: ml_io_map failed for 0x%llx\n",
