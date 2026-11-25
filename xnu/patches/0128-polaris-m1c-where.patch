@@ -1,0 +1,72 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1372,9 +1372,49 @@
+ 	    polaris_reg_rd(gmuwin, POLARIS_HFI_SFR_ADDR * 4u));
+ }
+ 
++/*
++ * M1c survey, read-only: is any memory we already own below 4 GiB?
++ *
++ * The HFI queue table has to be named by a 32-bit register, and this kernel holds no
++ * free page under 4 GiB (kalloc: 64 tries high, kmem_alloc_contig: KERN_NO_SPACE). But
++ * the shim already placed firmware blobs into memory and advertised them through the
++ * ADT, so those ranges are ours and their addresses are known. If one of them lies
++ * below 4 GiB there is a place to put a queue table without touching SMMU at all.
++ *
++ * Prints only: DRAM base and size, then every blob's address with a verdict.
++ */
++static void
++polaris_gx_m1c_where(void)
++{
++	struct pg_handoff handoff;
++
++	if (polaris_gpu_read_handoff(&handoff) != PG_OK) {
++		printf("POLARIS GPU: m1c where: ADT read refused\n");
++		return;
++	}
++	printf("POLARIS GPU: m1c where: dram 0x%llx size 0x%llx (4 GiB ceiling 0x100000000)\n",
++	    (unsigned long long)handoff.dram.base, (unsigned long long)handoff.dram.size);
++
++	{
++		unsigned i;
++
++		for (i = 0; i < PG_BLOB_COUNT; i++) {
++			uint64_t base = handoff.blob[i].pa;
++			uint64_t bytes = handoff.blob[i].bytes;
++
++			printf("POLARIS GPU: m1c where: %-12s 0x%llx +0x%llx %s\n",
++			    polaris_gpu_blob_name[i], (unsigned long long)base,
++			    (unsigned long long)bytes,
++			    (base + bytes <= 0x100000000ULL) ? "BELOW 4 GiB" : "above");
++		}
++		printf("POLARIS GPU: m1c where: zap 0x%llx splash 0x%llx\n",
++		    (unsigned long long)handoff.zap.base, (unsigned long long)handoff.splash.base);
++	}
++}
++
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+-    bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare)
++    bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare, bool where_report)
+ {
+ 	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
+ 	uint32_t v, waited;
+@@ -1465,6 +1505,9 @@
+ 	if (hfi_prepare) {
+ 		polaris_gx_m1c_hfi(gmuwin);
+ 	}
++	if (where_report) {
++		polaris_gx_m1c_where();
++	}
+ 	if (itcm_test) {
+ 		volatile uint32_t *itcm = (volatile uint32_t *)(uintptr_t)(gmuwin + 0xc00u * 4u);
+ 		uint32_t old0 = itcm[0], old1 = itcm[1];
+@@ -1563,7 +1606,7 @@
+ 
+ 	if (step >= 4) {
+ 		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 7, step >= 8,
+-		    step >= 9);
++		    step == 9, step >= 10);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}
