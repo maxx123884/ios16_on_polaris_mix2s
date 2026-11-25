@@ -241,3 +241,40 @@ m1c hfi: no page below 4 GiB (kmem_alloc_contig 0x3)  ← 0x3 = KERN_NO_SPACE
 先做**只读**的 ADT 普查（找 `memory-reserved`/carveout 节点）比直接写 SMMU 便宜得多，
 明天应该先做这一步：如果存在低地址 carveout，M1c 立刻回到"只差写表"；如果不存在，
 就必须做 SMMU，那是另一个量级的工作。
+
+## 14. 实测（2026-11-26 02:22，`polarisgxm1=10`）——DRAM 本身从 4 GiB 开始
+
+```
+m1c where: dram 0x100000000 size 0x7cc00000 (4 GiB ceiling 0x100000000)
+m1c where: GPU-SQE      0x101ffc000 +0x7cec  above
+m1c where: GPU-GMU      0x102004000 +0x8000  above
+m1c where: GPU-ZAP-*    0x10200c000..        above
+m1c where: zap 0x8c415000  splash 0x9d400000
+```
+
+**`dram-base = 0x1_00000000`**：这台机器的普通内存**从 4 GiB 开始**，低 4 GiB 根本不属于 DRAM。
+这解释了 `kalloc`/`kmem_alloc_contig` 的失败——不是运气，是物理布局。
+
+低 4 GiB 里确实有两块地：ZAP carveout（`0x8c415000`）和 splash 帧缓冲（`0x9d400000`），
+但都是已占用的用途，借来放队列等于毁掉 ZAP 固件或显示输出，不能这么做。
+
+## 15. 结论：M1c 必须做 SMMU，没有捷径
+
+| 事实 | 后果 |
+|---|---|
+| `HFI_QTBL_ADDR` 是 32 位 | GMU 只能看到 4 GiB 以内的地址 |
+| DRAM 从 4 GiB 开始 | 没有任何物理页能落在这个范围 |
+| 低 4 GiB 只有 zap/splash | 借不了 |
+
+所以 **IOVA 是唯一可行的地址形式，而 IOVA 只能由 SMMU 提供**。这不是"实现细节"，
+而是这个平台上 GPU 能工作的前提条件——厂商给 GPU 配 IOMMU 就是为了这个。
+
+### M1c 的工作量（估）
+
+1. 在 XNU 里建一个 SMMU 域：页表（4 KiB 粒度）、`TTBR0/TCR`、开 `CB0_SCTLR`；
+2. 把 HFI 页（高物理地址）映射到一个低 IOVA（例如 `0x60000000` 一带）；
+3. `SMR0/S2CR0` 让 GPU 的 stream id 走这个域，`SCR0` 开 `SMMUEN`；
+4. 再把 IOVA 写进 `HFI_QTBL_ADDR`，然后才放开 `SYSRESET`。
+
+第 1 步就需要 XNU 侧的内存管理协作（页表内存本身也要物理连续、且被 pmap 记录），
+不是几个寄存器的事。**这是一个独立项目，与今晚所有工作同量级或更大。**
