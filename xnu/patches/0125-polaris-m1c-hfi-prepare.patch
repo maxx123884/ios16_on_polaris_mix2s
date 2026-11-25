@@ -1,0 +1,196 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -9,6 +9,9 @@
+ #include <sys/systm.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
++#include <vm/pmap.h>
++#include <machine/machine_routines.h>
++#include <kern/kalloc.h>
+ #include "polaris_gpu_hash.h"
+ #include "polaris_gpu_validate.h"
+ #include <kern/processor.h>
+@@ -244,6 +247,13 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void ml_io_unmap(vm_offset_t, vm_size_t);
+ extern void delay(int);	/* microseconds in XNU; M0b waits in 1 ms steps */
++/* vm/pmap.h and kern/kalloc.h sit behind KERNEL_PRIVATE, which this file is not
++ * compiled with, so the few prototypes needed are declared here - the same way
++ * bzero/delay/memcpy already are. */
++extern void *pmap_kernel(void);
++extern unsigned int pmap_find_phys(void *pmap, uint64_t va);
++extern void *kalloc(vm_size_t size);
++extern void bzero(void *b, size_t len);
+ extern unsigned int ml_get_cpu_count(void);	/* for the CPU liveness report */
+ 
+ static bool
+@@ -1200,9 +1210,148 @@
+ 	    polaris_reg_rd(smmu, 0x1058u));
+ }
+ 
++/*
++ * M1c, first half: give the GMU something to talk to, without waking it.
++ *
++ * The last attempt cleared SYSRESET with both HFI address registers at zero, and the
++ * machine died - the firmware went looking for queues at physical zero. So the order is
++ * preparation first: one page of physically contiguous memory holding the queue table
++ * and its two queue headers, then the addresses in HFI_QTBL_ADDR and HFI_SFR_ADDR, then
++ * read the whole thing back. The CM3 stays in reset throughout, so a wrong layout here
++ * costs a reboot only if we later choose to release - not now.
++ *
++ * Layout is the a6xx one: a 24-byte table header, two 48-byte queue headers, queue 0
++ * host to GMU and queue 1 GMU to host, followed by their buffers.
++ */
++#define POLARIS_HFI_PAGE	4096u
++#define POLARIS_HFI_QTBL_INFO	0x5184u
++#define POLARIS_HFI_QTBL_ADDR	0x5185u
++#define POLARIS_HFI_SFR_ADDR	0x5182u
++
++struct polaris_hfi_table_hdr {
++	uint32_t version;
++	uint32_t size;
++	uint32_t qhdr0_offset;
++	uint32_t qhdr1_offset;
++	uint32_t qhdr0_size;
++	uint32_t qhdr1_size;
++} __attribute__((packed));
++
++struct polaris_hfi_queue_hdr {
++	uint32_t status;
++	uint32_t start_addr;
++	uint32_t type;
++	uint32_t queue_size;
++	uint32_t msg_size;
++	uint32_t drop_counter;
++	uint32_t rx_watermark;
++	uint32_t tx_watermark;
++	uint32_t rx_request;
++	uint32_t tx_request;
++	uint32_t read_index;
++	uint32_t write_index;
++} __attribute__((packed));
++
++struct polaris_hfi_blob {
++	struct polaris_hfi_table_hdr table;
++	struct polaris_hfi_queue_hdr q[2];
++	uint8_t host_to_gmu[1536];
++	uint8_t gmu_to_host[1536];
++} __attribute__((packed));
++
++static void
++polaris_gx_m1c_hfi(vm_offset_t gmuwin)
++{
++	static struct polaris_hfi_blob *blob;
++	static vm_offset_t va;
++	uint64_t pa;
++	uint32_t before_info, before_tbl, before_sfr;
++
++	if (blob == NULL) {
++		/* One page: a single kalloc page is physically contiguous by construction. */
++		blob = (struct polaris_hfi_blob *)kalloc(POLARIS_HFI_PAGE);
++		if (blob == NULL) {
++			printf("POLARIS GPU: m1c hfi: kalloc failed\n");
++			return;
++		}
++		va = (vm_offset_t)(uintptr_t)blob;
++		bzero(blob, POLARIS_HFI_PAGE);
++	}
++
++	{
++		unsigned int pn = pmap_find_phys(pmap_kernel(), (uint64_t)va);
++
++		if (pn == 0) {
++			printf("POLARIS GPU: m1c hfi: no physical page for 0x%llx\n",
++			    (unsigned long long)va);
++			return;
++		}
++		pa = (uint64_t)pn << PAGE_SHIFT;
++	}
++	printf("POLARIS GPU: m1c hfi: va 0x%llx pa 0x%llx (%u bytes, contiguous by allocation)\n",
++	    (unsigned long long)va, (unsigned long long)pa, POLARIS_HFI_PAGE);
++
++	/* table header */
++	blob->table.version = 0;
++	blob->table.size = sizeof(struct polaris_hfi_table_hdr) + 2u * sizeof(struct polaris_hfi_queue_hdr);
++	blob->table.qhdr0_offset = sizeof(struct polaris_hfi_table_hdr);
++	blob->table.qhdr0_size = sizeof(struct polaris_hfi_queue_hdr);
++	blob->table.qhdr1_offset = blob->table.qhdr0_offset + blob->table.qhdr0_size;
++	blob->table.qhdr1_size = sizeof(struct polaris_hfi_queue_hdr);
++
++	/* queue 0: host to GMU, queue 1: GMU to host; addresses are physical */
++	blob->q[0].status = 1u;
++	blob->q[0].start_addr = (uint32_t)(pa + offsetof(struct polaris_hfi_blob, host_to_gmu));
++	blob->q[0].type = 0u;
++	blob->q[0].queue_size = sizeof(blob->host_to_gmu);
++	blob->q[0].msg_size = sizeof(blob->host_to_gmu);
++	blob->q[0].rx_watermark = sizeof(blob->host_to_gmu) / 4u;
++	blob->q[0].tx_watermark = sizeof(blob->host_to_gmu) / 4u;
++	blob->q[0].read_index = 0;
++	blob->q[0].write_index = 0;
++
++	blob->q[1].status = 1u;
++	blob->q[1].start_addr = (uint32_t)(pa + offsetof(struct polaris_hfi_blob, gmu_to_host));
++	blob->q[1].type = 1u;
++	blob->q[1].queue_size = sizeof(blob->gmu_to_host);
++	blob->q[1].msg_size = sizeof(blob->gmu_to_host);
++	blob->q[1].rx_watermark = sizeof(blob->gmu_to_host) / 4u;
++	blob->q[1].tx_watermark = sizeof(blob->gmu_to_host) / 4u;
++
++	printf("POLARIS GPU: m1c hfi: table size %u hdr0@%u hdr1@%u q0.start 0x%08x q1.start 0x%08x\n",
++	    blob->table.size, blob->table.qhdr0_offset, blob->table.qhdr1_offset,
++	    blob->q[0].start_addr, blob->q[1].start_addr);
++
++	before_info = polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_INFO * 4u);
++	before_tbl = polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u);
++	before_sfr = polaris_reg_rd(gmuwin, POLARIS_HFI_SFR_ADDR * 4u);
++	printf("POLARIS GPU: m1c hfi regs before: info 0x%08x tbl 0x%08x sfr 0x%08x\n",
++	    before_info, before_tbl, before_sfr);
++
++	polaris_reg_wr(gmuwin, POLARIS_HFI_QTBL_INFO * 4u, 1u);
++	polaris_reg_wr(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u, (uint32_t)pa);
++	polaris_reg_wr(gmuwin, POLARIS_HFI_SFR_ADDR * 4u,
++	    (uint32_t)(pa + offsetof(struct polaris_hfi_blob, host_to_gmu)));
++	delay(1);
++	printf("POLARIS GPU: m1c hfi regs after: info 0x%08x tbl 0x%08x sfr 0x%08x (readback %s)\n",
++	    polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_INFO * 4u),
++	    polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u),
++	    polaris_reg_rd(gmuwin, POLARIS_HFI_SFR_ADDR * 4u),
++	    (polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u) == (uint32_t)pa) ? "matches" : "MISMATCH");
++
++	/* the CM3 is still in reset: put the registers back so nothing is left half-set up */
++	polaris_reg_wr(gmuwin, POLARIS_HFI_QTBL_INFO * 4u, before_info);
++	polaris_reg_wr(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u, before_tbl);
++	polaris_reg_wr(gmuwin, POLARIS_HFI_SFR_ADDR * 4u, before_sfr);
++	printf("POLARIS GPU: m1c hfi regs restored: info 0x%08x tbl 0x%08x sfr 0x%08x\n",
++	    polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_INFO * 4u),
++	    polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u),
++	    polaris_reg_rd(gmuwin, POLARIS_HFI_SFR_ADDR * 4u));
++}
++
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+-    bool state_report, bool boot_cm3, bool smmu_report)
++    bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare)
+ {
+ 	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
+ 	uint32_t v, waited;
+@@ -1290,6 +1439,9 @@
+ 	if (smmu_report) {
+ 		polaris_gx_m1c_smmu();
+ 	}
++	if (hfi_prepare) {
++		polaris_gx_m1c_hfi(gmuwin);
++	}
+ 	if (itcm_test) {
+ 		volatile uint32_t *itcm = (volatile uint32_t *)(uintptr_t)(gmuwin + 0xc00u * 4u);
+ 		uint32_t old0 = itcm[0], old1 = itcm[1];
+@@ -1387,7 +1539,8 @@
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+ 	if (step >= 4) {
+-		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 7, step >= 8);
++		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 7, step >= 8,
++		    step >= 9);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}
