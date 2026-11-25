@@ -215,3 +215,29 @@ m1c smmu: cb0_ttbr0 0x00000000 cb0_tcr 0x00000000 cb0_fsr 0x00000000
 
 风险仍然存在：第 4 步可能再次挂死。但这次是**带着合法队列**去放核心，
 与 `=7` 那次"什么都不给就放"有本质区别——而且队列与地址都可以先读回校验。
+
+## 12. 实测（2026-11-26 02:10，`polarisgxm1=9`）——低 4 GiB 没有空闲页
+
+```
+m1c hfi: no page below 4 GiB after 64 tries           ← kalloc 连续 64 页全在高地址
+m1c hfi: no page below 4 GiB (kmem_alloc_contig 0x3)  ← 0x3 = KERN_NO_SPACE
+```
+
+- `kalloc` 64 次，返回的物理地址**全部 ≥ 4 GiB**；
+- 换成能指定上限的 `kmem_alloc_contig(..., high = 0xFFFFFFFF, ...)`，直接返回
+  `KERN_NO_SPACE`。
+
+**结论：XNU 在这台 6 GB 的机器上不持有 4 GiB 以下的空闲物理页。**
+而 `HFI_QTBL_ADDR` 只有 32 位——这两个事实放在一起，说明"直接把物理页地址写进寄存器"这条路
+在本平台上走不通，也就把 `=7` 那次挂死解释得更彻底了：不只是"地址是 0"，而是**任何高地址都会被截断**。
+
+## 13. M1c 剩下的两条路
+
+| 方案 | 代价 | 说明 |
+|---|---|---|
+| **启用 GPU 的 SMMU 翻译** | 大 | 给 GMU 一个 32 位 IOVA 映射到高物理页。厂商一直这么做——SMMU 存在的意义就是这个。需要建页表、开 `SMMUEN`、配流匹配 |
+| 找低地址 carveout | 中 | 若 ADT 里有 GPU 预留区且落在 4 GiB 以下，可以直接用它当 HFI 内存 |
+
+先做**只读**的 ADT 普查（找 `memory-reserved`/carveout 节点）比直接写 SMMU 便宜得多，
+明天应该先做这一步：如果存在低地址 carveout，M1c 立刻回到"只差写表"；如果不存在，
+就必须做 SMMU，那是另一个量级的工作。
