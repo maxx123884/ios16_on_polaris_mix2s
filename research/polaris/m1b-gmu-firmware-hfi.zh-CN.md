@@ -374,3 +374,36 @@ m1b boot release reset (sysreset 0x00000000)
 内核读不到低地址，但可以反过来做——让 shim 把同一份表**复制一份到内存映射的 blob 区**，
 内核读出来打印，逐字比对。`015` 应该先加这个校验，否则后面每个结论都建立在
 "表内容正确"这个未验证的假设上。
+
+## 20. 0135/0136 单变量隔离：**`BOOT_CONFIG = 0x2` 才是挂死的原因**（2026-11-26 21:42）
+
+| 实验 | 做了什么 | 结果 |
+|---|---|---|
+| `0135`（`=13`） | 只写 `BOOT_CONFIG=2`，不碰复位 | ✅ 存活，系统正常启动（launchd 72 行） |
+| `0136`（`=14`） | 写 `BOOT_CONFIG=0`，再清 `SYSRESET` | ✅ **存活**，系统继续启动 |
+
+`=14` 的 ring 是同一次启动内两次调用：
+
+```
+143: cfg-only after: sysreset 0x1 bootcfg 0x2: survived the write, reset untouched
+144: boot before:    sysreset 0x1 bootcfg 0x2
+145: write bootcfg 0x0
+146: release reset (sysreset 0x0)
+148: libignition: hello: commence primary ignition        ← 活着
+```
+
+`m1a clocks: cx on` 在整份 ring 里只出现 **1 次**，所以这是**一次启动**，不是重启后的残留。
+
+### 结论
+
+之前两次挂死（`=7`、`=12`）的真正原因不是"没有队列"、也不是"地址超 32 位"——
+**是 `BOOT_CONFIG = 0x2`**。在这个 GMU 上，`0x2` 大概表示"从非 ITCM 的源启动"，
+CM3 取指到不存在的空间，把整机拖死。写 `0` 才是对的。
+
+### 下一步（`=15`）：复位后第一次读寄存器
+
+`=14` 里 `boot after` 那行没有打出来，取而代之的是一整行空格——说明**清复位之后的第一批
+寄存器读**还有问题（可能读 `FW_INIT_RESULT` 时 GMU 状态未稳）。
+
+`015` 改成：放复位 → 先打一行标记 → 只读 `FW_INIT_RESULT` 一次 → 再打结果。
+这样能区分"读本身出事"还是"固件没起来"。

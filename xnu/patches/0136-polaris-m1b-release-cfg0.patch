@@ -1,0 +1,57 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1114,7 +1114,7 @@
+ #define POLARIS_GMU_HFISTATUS	0x5180u
+ 
+ static void
+-polaris_gx_m1b_boot(vm_offset_t gmuwin, bool cfg_only)
++polaris_gx_m1b_boot(vm_offset_t gmuwin, bool cfg_only, uint32_t cfg)
+ {
+ 	uint32_t sr_before = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u);
+ 	uint32_t bc_before = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u);
+@@ -1128,9 +1128,9 @@
+ 		return;
+ 	}
+ 
+-	printf("POLARIS GPU: m1b boot write bootcfg 0x%08x\n", 0x2u);
++	printf("POLARIS GPU: m1b boot write bootcfg 0x%08x\n", cfg);
+ 	delay(1300000);
+-	*(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u) = 0x2u;
++	*(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u) = cfg;
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+@@ -1474,7 +1474,7 @@
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+     bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare, bool where_report,
+-    bool zap_hfi, bool cfg_only)
++    bool zap_hfi, bool cfg_only, bool release_zero)
+ {
+ 	uint32_t before = polaris_reg_rd(gpucc, POLARIS_GPUCC_CX_GDSCR);
+ 	uint32_t v, waited;
+@@ -1570,10 +1570,13 @@
+ 		polaris_gx_m1c_hfi_in_zap(gmuwin);
+ 	}
+ 	if (boot_cm3) {
+-		polaris_gx_m1b_boot(gmuwin, false);
++		polaris_gx_m1b_boot(gmuwin, false, 0x2u);
+ 	}
+ 	if (cfg_only) {
+-		polaris_gx_m1b_boot(gmuwin, true);
++		polaris_gx_m1b_boot(gmuwin, true, 0x2u);
++	}
++	if (release_zero) {
++		polaris_gx_m1b_boot(gmuwin, false, 0u);
+ 	}
+ 	if (itcm_test) {
+ 		volatile uint32_t *itcm = (volatile uint32_t *)(uintptr_t)(gmuwin + 0xc00u * 4u);
+@@ -1673,7 +1676,7 @@
+ 
+ 	if (step >= 4) {
+ 		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 12, step >= 8,
+-		    false, step >= 10, step >= 11, step >= 13);
++		    false, step >= 10, step >= 11, step >= 13, step == 14);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}
