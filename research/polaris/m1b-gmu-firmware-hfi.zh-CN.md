@@ -852,3 +852,50 @@ ABL 点亮屏幕用的是 MDP 显示通路，跟 3D 核心不是一回事，所�
 不是"某一步跑通了"，而是**把这条路是否可行的边界测清楚了**：
 偏移、字/字节、基址、窗口、电源所有权——每一层都用"读出合理值"验证过，
 而不是"写进去没报错"。这条纪律本身是这几小时最有价值的产出。
+
+## 34. 里程碑：**GPU 在本机 Android 内核下确认可用**（2026-11-27 00:55）
+
+方向确定后（先在 Linux 侧验证硬件），直接在 TWRP 里查厂商 KGSL：
+
+```
+gpu_model            Adreno630v2          ← 读 chipid 需要块已供电
+gpu_busy_percentage  0 %
+gpuclk               257000000            ← 时钟在跑
+devfreq/cur_freq     257000000
+```
+
+`/sys/class/kgsl/kgsl-3d0` 存在，`gpu_model` 能读出 `Adreno630v2`——**这块 GPU 在同一个
+设备、同一个 SoC 上是可以被点亮的**，硬件与固件都没问题。
+
+### 它走的电源路径（dmesg 实证）
+
+```
+gpu_cx_gdsc: supplied by pm8998_s9_level              ← CX 域的电源轨
+qmp-aop-clk soc:qcom,aopclk: Registered clocks with AOP
+clk-rpmh soc:qcom,rpmhclk: Registered RPMh clocks
+gpu_cc-sdm845 5090000.qcom,gpucc: Registered GPU CC clocks
+clk: gpu_cc_gmu_clk_src: set OPP pair(500000000 Hz) on 506a000.qcom,gmu
+```
+
+即：**GDSC 电源轨（PM8998 S9）+ AOP 时钟 + RPMh 时钟**，全部经由平台框架——
+这正是从 XNU 侧拿不到的东西，也解释了 `=32`~`=37` 的读 0 / 写挂。
+厂商 `kgsl_gmu.c` 里则是 `cmd_db_get_aux_data()` + `rpmh_vote` 那一套。
+
+### 由此得到的下一步（有明确参照物）
+
+1. **RPMh 的 TCS 命令集在 AP 地址空间里**（`rpmh-rsc` 节点），理论上可以不经过 AOP mailbox
+   直接写投票命令。先在设备树里定位 `qcom,rpmh-rsc` 的 `reg`，再研究 TCS 命令格式
+   （参考 Linux `drivers/soc/qcom/rpmh-rsc.c`）。
+2. 若 TCS 可行，就在 XNU 里实现"最小 RPMh 客户端"，投票让 GPUCX/GX 上电，
+   然后才谈 GMU 固件与 HFI。
+3. 若 TCS 不可行，剩下的只有 AOP mailbox（`qcom,qmp-aop`）协议，工作量更大。
+
+### 今晚的净产出
+
+| 项目 | 结果 |
+|---|---|
+| 硬件可用性 | **确认可用**（TWRP 下 Adreno630v2 @ 257 MHz） |
+| GMU 寄存器基址/窗口 | 设备树实证：`0x0506A000 + 0x30000`，字节偏移 |
+| XNU 侧能否直接点 GPU | **不能**，缺电源所有权（实读 0、实写挂） |
+| shim 侧能否 | **不能**，同样读 0（屏幕实证） |
+| 下一步入口 | RPMh TCS（优先）/ AOP mailbox |
