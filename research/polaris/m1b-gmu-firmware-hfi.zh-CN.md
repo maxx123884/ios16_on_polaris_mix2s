@@ -1005,3 +1005,59 @@ shim 里有一套**可用的 panic 屏幕**（`STAGE`/`ESR`/`ELR`/`FAR`/`SPSR`/`
 结论：**硬件没问题，缺的是平台电源协议的可达路径**；而这条路径的入口
 （cmd-db / RSC）在我们能触及的两个阶段里都不稳定。下一步应该从
 **Android 侧把参照数据导出**，而不是继续在 macOS 侧试探。
+
+## 37. **拿到 RPMh 资源表：cmd_db 全文导出**（2026-11-27 01:40）
+
+TWRP 的 debugfs 上有 `cmd_db` 节点（5600 字节纯文本），直接 `cat` 即可——不必再去摸
+`0x0C3F0000` 那块会 panic 的内存。全文已存入
+`research/polaris/cmd_db-sdm845-polaris.txt`（116 条）。
+
+GPU 相关的条目：
+
+```
+Address: 0x30000, id: cx.lvl    aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 80 01 ...
+Address: 0x30004, id: cx.tmr
+Address: 0x30050, id: gfx.lvl   aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 40 01 80 01 a0 01
+Address: 0x30054, id: gfx.tmr
+Address: 0x42700, id: vrm.gfx
+```
+
+- `cx.lvl` = `0x30000`：GPU 的 **CX 电压档位**资源；
+- `gfx.lvl` = `0x30050`：**GX 电压档位**；
+- `*.tmr` = 对应的定时器资源；
+- `vrm.gfx` = `0x42700`，VRM 电源资源。
+
+`aux data` 是各档位的实际编码值表（如 CX 有 0x10/0x30/0x40/0x80/0xC0/0x100/0x180 等档）。
+
+### 另外确认的调试设施（TWRP）
+
+```
+/sys/kernel/debug/cmd_db                     资源表（文本，可直接 cat）
+/sys/kernel/debug/kgsl/kgsl-3d0/log_level_pwr  电源日志开关
+/sys/class/kgsl/kgsl-3d0/force_rail_on         强制上电
+/sys/class/kgsl/kgsl-3d0/force_clk_on          强制开时钟
+/sys/class/kgsl/kgsl-3d0/force_no_nap
+/sys/kernel/debug/aop_send_message             AOP 消息接口
+```
+
+KGSL 的日志走自己的缓冲、不进 dmesg，所以要读它的详细流程需要另找出口
+（`/sys/kernel/debug/kgsl/kgsl-3d0/log` 或提高 log_level 后再 dump）。
+
+### 下一步（清晰、有依据）
+
+1. **地址表已有，缺的是"怎么写"**：RPMh 的 TCS（Trigger Command Set）在 RSC 块里，
+   Linux `rpmh-rsc.c` 的布局是关键：
+   - DRV 基址 = RSC 基址 + 0x0/0x1000/...（多个 DRV）
+   - 每个 DRV：`CMD_WAIT_FOR_CMPL`=+0x0，`IRQ_STATUS`=+0x4，`IRQ_ENABLE`=+0x8，
+     `TCS`=+0x2A0（RSC_DRV_TCS_OFFSET=672），每个 TCS 里 CMD 数组 = TCS+0x14（RSC_DRV_CMD_OFFSET=20），
+     每 4 字节一个 `{addr, data, cmd}` 三元组（共 4 字节 * 3 = 12 字节/命令）。
+2. **先读后写**：读 `CMD_WAIT_FOR_CMPL` 与 `IRQ_STATUS`，确认 TCS 机制在（RSC 在 `0162` 已读通过）。
+3. **一次只投一路**：先 `cx.lvl` 投到最高档，验证 `GPUCC` 的 `cx_gdscr` 状态变化；
+   再碰 `gfx.lvl`。任何一步异常立即停止。
+4. 若 TCS 写入也被拒（总线中止），那就只剩 AOP mailbox（`/sys/kernel/debug/aop_send_message`
+   在 Android 侧可用，正好可以观察它的消息格式）。
+
+### 今晚的净结果
+
+从"完全不知道该写什么"到"**地址表在手、通道已验证可读一次、下一步是格式问题**"。
+这是从盲目试错转向有依据实现的一步。

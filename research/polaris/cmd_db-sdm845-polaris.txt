@@ -1,0 +1,116 @@
+Address: 0x30000, id: cx.lvl, aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 80 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30004, id: cx.tmr
+Address: 0x30010, id: mx.lvl, aux data: 00 00 10 00 10 00 00 01 80 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30014, id: mx.tmr
+Address: 0x30020, id: ebi.lvl, aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 80 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30024, id: ebi.tmr
+Address: 0x30030, id: lcx.lvl, aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 80 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30034, id: lcx.tmr
+Address: 0x30040, id: lmx.lvl, aux data: 00 00 10 00 c0 00 00 01 80 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30044, id: lmx.tmr
+Address: 0x30050, id: gfx.lvl, aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 40 01 80 01 a0 01 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30054, id: gfx.tmr
+Address: 0x30060, id: mss.lvl, aux data: 00 00 10 00 30 00 40 00 80 00 c0 00 00 01 80 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30064, id: mss.tmr
+Address: 0x30070, id: ddr.lvl, aux data: 00 00 20 00 80 00 a0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30074, id: ddr.tmr
+Address: 0x30080, id: xo.lvl, aux data: 00 00 20 00 50 00 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+Address: 0x30084, id: xo.tmr
+Address: 0x50000, id: MC0, aux data: 80 84 1e 00 10 00 00 00 
+Address: 0x500e0, id: MC1, aux data: 80 84 1e 00 00 00 00 00 
+Address: 0x500e4, id: MC2, aux data: 80 84 1e 00 00 00 00 00 
+Address: 0x5003c, id: SH0, aux data: 00 09 3d 00 40 00 01 00 
+Address: 0x50038, id: SH1, aux data: 00 09 3d 00 20 00 01 00 
+Address: 0x50034, id: SH2, aux data: 00 09 3d 00 08 00 01 00 
+Address: 0x50030, id: SH3, aux data: 00 09 3d 00 08 00 01 00 
+Address: 0x5002c, id: SH4, aux data: 00 09 3d 00 20 00 01 00 
+Address: 0x50028, id: SH5, aux data: 00 09 3d 00 20 00 01 00 
+Address: 0x500e8, id: SH6, aux data: 00 09 3d 00 00 00 01 00 
+Address: 0x500ec, id: SH7, aux data: 00 09 3d 00 00 00 01 00 
+Address: 0x50084, id: MM0, aux data: 80 84 1e 00 40 00 04 00 
+Address: 0x50088, id: MM1, aux data: 80 84 1e 00 20 00 04 00 
+Address: 0x5008c, id: MM2, aux data: 80 84 1e 00 20 00 04 00 
+Address: 0x50090, id: MM3, aux data: 80 84 1e 00 20 00 04 00 
+Address: 0x50040, id: SN0, aux data: c0 27 09 00 10 00 03 00 
+Address: 0x50044, id: SN1, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50048, id: SN2, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x5004c, id: SN3, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50050, id: SN4, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50054, id: SN5, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50058, id: SN6, aux data: c0 27 09 00 04 00 03 00 
+Address: 0x5005c, id: SN7, aux data: c0 27 09 00 04 00 03 00 
+Address: 0x50060, id: SN8, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50064, id: SN9, aux data: c0 27 09 00 10 00 03 00 
+Address: 0x50068, id: SN10, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x5006c, id: SN11, aux data: c0 27 09 00 10 00 03 00 
+Address: 0x50070, id: SN12, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50074, id: SN13, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x50078, id: SN14, aux data: c0 27 09 00 10 00 03 00 
+Address: 0x5007c, id: SN15, aux data: c0 27 09 00 08 00 03 00 
+Address: 0x500a0, id: CE0, aux data: 92 1a 00 00 08 00 06 00 
+Address: 0x500a4, id: IP0, aux data: 28 00 00 00 08 00 07 00 
+Address: 0x500a8, id: CN0, aux data: 00 80 00 00 04 00 05 00 
+Address: 0x50080, id: QUP0, aux data: 01 00 00 00 04 00 08 00 
+Address: 0x5000c, id: ACV, aux data: 40 42 0f 00 00 00 0b 00 
+Address: 0x50010, id: ALC, aux data: 40 42 0f 00 00 00 0a 00 
+Address: 0x500dc, id: NU0, aux data: 40 42 0f 00 00 00 0f 00 
+Address: 0x40000, id: smpa3
+Address: 0x40100, id: smpa5
+Address: 0x40200, id: smpa7
+Address: 0x40300, id: bobb1
+Address: 0x40400, id: smpa1
+Address: 0x40400, id: vrm.ebi
+Address: 0x40500, id: smpa2
+Address: 0x40600, id: smpa4
+Address: 0x40700, id: smpa6
+Address: 0x40700, id: vrm.mx
+Address: 0x40800, id: smpa9
+Address: 0x40800, id: vrm.cx
+Address: 0x40900, id: ldoa1
+Address: 0x40a00, id: ldoa2
+Address: 0x40d00, id: ldoa3
+Address: 0x40e00, id: ldoa4
+Address: 0x40e00, id: vrm.lmx
+Address: 0x40f00, id: ldoa5
+Address: 0x41200, id: ldoa6
+Address: 0x41300, id: ldoa7
+Address: 0x40b00, id: ldoa8
+Address: 0x41700, id: ldoa9
+Address: 0x41800, id: ldoa10
+Address: 0x41000, id: ldoa11
+Address: 0x41400, id: ldoa12
+Address: 0x41900, id: ldoa13
+Address: 0x41500, id: ldoa14
+Address: 0x41600, id: ldoa15
+Address: 0x42200, id: ldoa16
+Address: 0x40c00, id: ldoa17
+Address: 0x42300, id: ldoa18
+Address: 0x41a00, id: ldoa19
+Address: 0x41b00, id: ldoa20
+Address: 0x41c00, id: ldoa21
+Address: 0x41d00, id: ldoa22
+Address: 0x41e00, id: ldoa23
+Address: 0x41f00, id: ldoa24
+Address: 0x42000, id: ldoa25
+Address: 0x42400, id: ldoa26
+Address: 0x41100, id: ldoa27
+Address: 0x41100, id: vrm.lcx
+Address: 0x42100, id: ldoa28
+Address: 0x42500, id: vsa1
+Address: 0x42600, id: vsa2
+Address: 0x4c000, id: lnbclka1
+Address: 0x4c000, id: vrm.xob
+Address: 0x4c100, id: lnbclka2
+Address: 0x4c200, id: lnbclka3
+Address: 0x4c300, id: rfclka1
+Address: 0x4c400, id: rfclka2
+Address: 0x4c500, id: rfclka3
+Address: 0x42700, id: smpc1
+Address: 0x42700, id: vrm.gfx
+Address: 0x42800, id: smpc2
+Address: 0x42800, id: vrm.mss
+Address: 0x42900, id: smpc3
+Address: 0x42a00, id: pbs
+Address: 0x4c600, id: gpioa24
+Address: 0x42b00, id: vrm.spmi
+Address: 0x42c00, id: vrm.soc
