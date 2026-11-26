@@ -1112,3 +1112,47 @@ XNU 侧直接读 `0x0B220000`，**无 fault**：
 | TCS 写入格式 | ⬜ 缺 layout，未尝试 |
 
 **下一步唯一的正经事：找到 `rpmh-rsc.h` 的布局定义。** 在那之前不要写 TCS。
+
+## 40. 拿到权威布局（2026-11-27 02:55）
+
+从 Linux 主线 `drivers/soc/qcom/rpmh-rsc.c` 取到寄存器表（SDM845 用 ver 2.7）：
+
+| 寄存器 | 偏移 |
+|---|---|
+| `IRQ_ENABLE` | `0x00` |
+| `IRQ_STATUS` | `0x04` |
+| `IRQ_CLEAR` | `0x08` |
+| `CMD_WAIT_FOR_CMPL` | `0x10` |
+| `CONTROL` | `0x14` |
+| `CMD_ENABLE` | `0x1C` |
+| `TCS 数组` | `0x2A0`（每个 TCS 内命令从 `+0x14`） |
+
+单条命令 3 个字：`{addr, data, msgid}`，其中
+`msgid = 8 | (须响应?0x100:0) | (读?0:0x10000)`。
+
+完整表已存 `research/polaris/rpmh-rsc-layout-notes.md`。
+
+### 与 `=50` 的 dump 对照
+
+```
+000  00a200a8      ← IRQ_ENABLE
+004  00000000      ← IRQ_STATUS：没有挂起
+008  00000000      ← IRQ_CLEAR
+010  00000000      ← CMD_WAIT_FOR_CMPL
+014  00000000      ← CONTROL
+01c  00000000      ← CMD_ENABLE：没有命令在执行
+```
+
+**完全自洽**：没有任何投票在飞，GPU 没上电。
+
+`0x110`–`0x308` 那片恒为 `4` 的区域覆盖了 TCS 数组起点 `0x2A0`，
+但"空闲 TCS 的读回值"是否为固定图案，还需要下一次实验确认——不猜。
+
+### 下一步（有布局了，可以动手）
+
+1. 读 `IRQ_ENABLE` 确认当前使能了哪些 TCS（`0x00A200A8` 需要按位拆）；
+2. 构造一条 ACTIVE 投票：`{addr=0x30000 (cx.lvl), data=<某档>, msgid=0x10008}`，
+   写入 `TCS[0]` 的命令槽（`0x2A0 + 0x14`），置 `CMD_ENABLE` 对应位；
+3. **一次只投一路、投最低档**，随后读 `IRQ_STATUS` 看是否完成、读 `GPUCC.cx_gdscr`
+   看电源开关是否变化；
+4. 任何异常立即停止，绝不连续投 GX。
