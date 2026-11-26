@@ -1,0 +1,102 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1832,6 +1832,80 @@
+ 	sweet_log_sync();
+ }
+ 
++
++/*
++ * M1k: go straight at the RSC, inside the window the device tree actually declares.
++ *
++ * The tree says qcom,gmu is 0x0506a000 for 0x30000 bytes with reg-names kgsl_gmu_reg, so the
++ * offsets are bytes and everything up to 0x2FFFF is addressable. 0156 died because it read
++ * 0x24542, which is a GPU_CC register and lives in a different block - the fault was ours,
++ * not the hardware's. RSCC at 0x23B07/0x23B08/0x23501 is inside this window.
++ */
++static void
++polaris_gx_m1k_rsc(vm_offset_t win)
++{
++	uint32_t ack, busy;
++	unsigned int i;
++
++	printf("POLARIS GPU: m1k: entered\n");
++	sweet_log_sync();
++	delay(300000);
++
++	printf("POLARIS GPU: m1k: reading rscc_control_ack (+0x23B08)\n");
++	sweet_log_sync();
++	delay(300000);
++	ack = polaris_reg_rd_b(win, 0x23B08u);
++	printf("POLARIS GPU: m1k: ack before = 0x%08x\n", ack);
++	sweet_log_sync();
++	delay(300000);
++
++	printf("POLARIS GPU: m1k: writing rscc_control_req = 2 (+0x23B07)\n");
++	sweet_log_sync();
++	delay(300000);
++	polaris_reg_wr_b(win, 0x23B07u, 2u);
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: m1k: request written, polling ack\n");
++	sweet_log_sync();
++	delay(300000);
++
++	for (i = 0; i < 1000; i++) {
++		ack = polaris_reg_rd_b(win, 0x23B08u);
++		if (ack & 2u) {
++			break;
++		}
++		delay(10);
++	}
++	printf("POLARIS GPU: m1k: ack 0x%08x after %u polls (%s)\n", ack, i,
++	    (ack & 2u) ? "RSC GRANTED" : "no ack");
++	sweet_log_sync();
++	delay(300000);
++
++	if (ack & 2u) {
++		for (i = 0; i < 1000; i++) {
++			busy = polaris_reg_rd_b(win, 0x23501u);
++			if (busy == 0) {
++				break;
++			}
++			delay(10);
++		}
++		printf("POLARIS GPU: m1k: seq_busy 0x%08x after %u polls\n", busy, i);
++		polaris_reg_wr_b(win, 0x23B07u, 0u);
++		polaris_reg_wr_b(win, 0x1F840u, 1u);	/* power counter enable */
++		sweet_log_sync();
++		delay(300000);
++	}
++
++	printf("POLARIS GPU: m1k: reading CM3_SYSRESET (+0x1F800)\n");
++	sweet_log_sync();
++	delay(300000);
++	ack = polaris_reg_rd_b(win, 0x1F800u);
++	printf("POLARIS GPU: m1k: sysreset = 0x%08x (%s)\n", ack,
++	    ack != 0u ? "CSR ALIVE" : "still zero");
++	sweet_log_sync();
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -2147,7 +2221,17 @@
+ 		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, false, false, false);
+-		if (step >= 36) {
++		if (step >= 37) {
++			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
++			    (vm_size_t)POLARIS_GMU_SIZE);
++
++			if (w != 0) {
++				polaris_gx_m1k_rsc(w);
++			} else {
++				printf("POLARIS GPU: m1k: map failed\n");
++			}
++			step = 0;
++		} else if (step >= 36) {
+ 			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
+ 			    (vm_size_t)POLARIS_GMU_MAP_SIZE);
+ 
