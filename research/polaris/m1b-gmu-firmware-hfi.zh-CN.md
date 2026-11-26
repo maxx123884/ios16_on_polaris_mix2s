@@ -899,3 +899,52 @@ clk: gpu_cc_gmu_clk_src: set OPP pair(500000000 Hz) on 506a000.qcom,gmu
 | XNU 侧能否直接点 GPU | **不能**，缺电源所有权（实读 0、实写挂） |
 | shim 侧能否 | **不能**，同样读 0（屏幕实证） |
 | 下一步入口 | RPMh TCS（优先）/ AOP mailbox |
+
+## 35. **关键突破：RPMh 从我们这边可达**（`0162`，屏幕实测）
+
+在 shim 里读 RPMh 的 RSC（`0x0B220000`）和 cmd-db（`0x0C3F0000`）：
+
+```
+GMU    SYSRESET 00000000        (未上电，与 0160 一致)
+RSC    00A200AB                 ← 非零，可读
+RSC    00000000
+RSC    00000000
+RSC    00000000
+RSC+   00010100                 (RSC + 0x1000)
+CMDB   000F0040
+CMDB   000F004B
+CMDB   000F008B
+CMDB   B5FE0000
+CDB8   281C5976  E520C0DD  82C90CE4  7D6A2405
+```
+
+**RSC 和 cmd-db 都可访问。** 这改变了整个可行性判断：
+
+- 之前认为"必须实现 AOP mailbox 才能给 GPU 上电"；
+- 现在知道 **RPMh 的 TCS（Trigger Command Set）寄存器在 AP 地址空间里，且我们读得到**——
+  那么"投票请求 GPUCX/GX 上电"有可能**不需要 AOP mailbox**，直接写 TCS 即可。
+
+### 为什么这很重要
+
+Linux 的 `rpmh-rsc.c` 里，上层（regulator/clk 框架）最终就是往 RSC 的 TCS 寄存器写
+`(addr, data, cmd)` 三元组并触发。我们读到的 `0x00A200AB`、`0x00010100` 说明
+RSC 块是活的（不是全零的未上电状态，与 GMU 形成鲜明对比）。
+
+### 下一步（有明确规格可依）
+
+1. **解析 cmd-db**：它是"资源名 → RPMh 地址"的映射表，里面有 `gpu_cc_cx_gdsc`、
+   `gpu_cc_gx_gdsc`、`gpu_cc_cx_gfx3d_clk` 之类的条目。
+   做法：把 `0x0C3F0000` 起的若干 KB 整块 dump 出来（shim 打到屏幕太慢，改成 XNU 写 ring，
+   或用 shim 写到可读处再取），在主机上搜字符串定位条目。
+2. **拿到 GPU 的 RPMh 地址**后，按 TCS 格式构造写命令（参考 Linux `rpmh-rsc.c`
+   的 `RSC_DRV_CMD_*` 偏移与 `tcs_cmd` 结构）。
+3. **先只读验证**：读 TCS 的 CMD_WAIT_FOR_CMPL / IRQ_STATUS，确认触发机制可用，
+   再真正投票。
+
+### 风险与边界
+
+- TCS 写入是不可逆的电源操作，**必须先有 cmd-db 的正确地址**，不能猜；
+- 投票错误可能让 GPU 上电但电压不对——**一次只改一路**（先 CX，再 GX），每步验证；
+- RSC 是"always-on"域，写错可能影响整机电源，比 GMU 寄存器的风险高一个量级。
+
+**因此下一步的第一件事是 dump cmd-db 并离线解析，不做任何写操作。**

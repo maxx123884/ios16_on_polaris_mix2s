@@ -86,7 +86,31 @@ polaris_gmu_peek(void)
 	con_hex8("ADDR", (uint32_t)(POLARIS_GMU_BASE + POLARIS_GMU_SYSRESET));
 	con_hex8("SYSRESET", v);
 	con_str("GMU", v ? "NON-ZERO: the block is powered here" : "zero: not powered even here");
-	delay_ms(30000);
+
+	/*
+	 * RPMh is the other way in: GPU power is voted there, and the RSC that carries the vote
+	 * lives at 0x0B220000 with the command DB just behind it. XNU has been unreliable to
+	 * start in these experiments, the shim never is - so read them here, where a result is
+	 * guaranteed and the screen is the output.
+	 */
+	{
+		volatile uint32_t *rsc = (volatile uint32_t *)0x0B220000UL;
+		volatile uint32_t *cdb = (volatile uint32_t *)0x0C3F0000UL;
+		int i;
+
+		for (i = 0; i < 4; i++) {
+			con_hex8("RSC", rsc[i]);
+		}
+		con_hex8("RSC+", rsc[0x1000 / 4]);
+		for (i = 0; i < 4; i++) {
+			con_hex8("CMDB", cdb[i]);
+		}
+		for (i = 0; i < 4; i++) {
+			con_hex8("CDB8", cdb[8 + i]);
+		}
+		con_str("RPMH", "if the RSC words are not all zero, TCS is reachable");
+	}
+	delay_ms(40000);
 }
 
 

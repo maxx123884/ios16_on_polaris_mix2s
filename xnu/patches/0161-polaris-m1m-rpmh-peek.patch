@@ -1,0 +1,76 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1906,6 +1906,61 @@
+ 	sweet_log_sync();
+ }
+ 
++
++/*
++ * M1m: can we even see RPMh from here?
++ *
++ * GPU power on this platform is voted through RPMh, and the RSC that carries those votes
++ * sits at 0x0B220000 (the device tree names interrupt-controller@0xb220000, with
++ * rpmh-master-stats@b221200 inside it). The command DB at 0x0C3F000C holds the mapping from
++ * resource names like gpu_cc_cx_gdsc to the addresses a vote has to name.
++ *
++ * If both are readable from XNU, the TCS path is open and the GPU can be voted on without
++ * the AOP mailbox. If neither is, that door closes too and only the mailbox remains.
++ *
++ * Read only - sixteen words from each, nothing written.
++ */
++static void
++polaris_gx_m1m_rpmh_peek(void)
++{
++	static const struct {
++		const char *name;
++		uint64_t pa;
++	} r[] = {
++		{ "RSC",     0x0B220000ULL },
++		{ "cmd_db",  0x0C3F0000ULL },
++	};
++	unsigned int i, k;
++
++	printf("POLARIS GPU: m1m: entering, reading RPMh regions\n");
++	sweet_log_sync();
++	delay(300000);
++
++	for (i = 0; i < sizeof(r) / sizeof(r[0]); i++) {
++		vm_offset_t w = ml_io_map((vm_offset_t)r[i].pa, (vm_size_t)0x1000);
++
++		if (w == 0) {
++			printf("POLARIS GPU: m1m: %s at 0x%llx map failed\n",
++			    r[i].name, (unsigned long long)r[i].pa);
++			sweet_log_sync();
++			delay(300000);
++			continue;
++		}
++		for (k = 0; k < 16; k += 4) {
++			printf("POLARIS GPU: m1m: %s +0x%02x: %08x %08x %08x %08x\n",
++			    r[i].name, k * 4u,
++			    polaris_reg_rd_b(w, k * 4u),
++			    polaris_reg_rd_b(w, (k + 1) * 4u),
++			    polaris_reg_rd_b(w, (k + 2) * 4u),
++			    polaris_reg_rd_b(w, (k + 3) * 4u));
++			sweet_log_sync();
++			delay(300000);
++		}
++	}
++	printf("POLARIS GPU: m1m: done, both regions answered\n");
++	sweet_log_sync();
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -2221,7 +2276,10 @@
+ 		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, false, false, false);
+-		if (step >= 37) {
++		if (step >= 40) {
++			polaris_gx_m1m_rpmh_peek();
++			step = 0;
++		} else if (step >= 37) {
+ 			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
+ 			    (vm_size_t)POLARIS_GMU_SIZE);
+ 
