@@ -1,0 +1,80 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -256,6 +256,8 @@
+ extern unsigned int pmap_find_phys(void *pmap, uint64_t va);
+ extern void *kalloc(vm_size_t size);
+ extern void bzero(void *b, size_t len);
++extern void timeout(void (*fn)(void *), void *arg, int ticks);
++extern int hz;
+ extern void kfree(void *addr, vm_size_t size);
+ extern unsigned int ml_get_cpu_count(void);	/* for the CPU liveness report */
+ 
+@@ -1481,6 +1483,53 @@
+ 	return true;
+ }
+ 
++
++/*
++ * M1b, deferred: let the CM3 out of reset twenty seconds after boot has moved on.
++ *
++ * Clearing SYSRESET reliably kills the machine, and it does so before the next printf -
++ * so every attempt so far has been paid for with a hang and a manual power cycle, and
++ * has polluted every experiment that followed. Scheduling it late changes the price: the
++ * system is already up, so a hang costs nothing that has not already been collected.
++ *
++ * The window is mapped again here because the earlier one belongs to a different call.
++ */
++static void
++polaris_gx_m1b_release_deferred(void *arg)
++{
++	vm_offset_t win;
++	uint32_t sr, cfg;
++
++	(void)arg;
++	win = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	if (win == 0) {
++		printf("POLARIS GPU: deferred release: window map failed\n");
++		return;
++	}
++	printf("POLARIS GPU: deferred release: starting\n");
++	sr = *(volatile uint32_t *)(uintptr_t)(win + 0x5000u * 4u);
++	cfg = *(volatile uint32_t *)(uintptr_t)(win + 0x5001u * 4u);
++	printf("POLARIS GPU: deferred release: sysreset 0x%08x bootcfg 0x%08x\n", sr, cfg);
++
++	*(volatile uint32_t *)(uintptr_t)(win + 0x5184u * 4u) = 1u;
++	*(volatile uint32_t *)(uintptr_t)(win + 0x5185u * 4u) = POLARIS_HFI_PA;
++	*(volatile uint32_t *)(uintptr_t)(win + 0x5182u * 4u) = POLARIS_HFI_PA + 120u;
++	*(volatile uint32_t *)(uintptr_t)(win + 0x5001u * 4u) = 0u;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: deferred release: table and config set, clearing reset now\n");
++	delay(1300000);
++	*(volatile uint32_t *)(uintptr_t)(win + 0x5000u * 4u) = sr & ~1u;
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	delay(1000);
++	printf("POLARIS GPU: deferred release: fw_init 0x%08x, table 0x%08x\n",
++	    *(volatile uint32_t *)(uintptr_t)(win + 0x501cu * 4u),
++	    *(volatile uint32_t *)(uintptr_t)(win + 0x5185u * 4u));
++}
++
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+     bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare, bool where_report,
+@@ -1684,7 +1733,13 @@
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+-	if (step >= 4) {
++	if (step == 18) {
++		/* Prepare everything now, but let the CM3 out of reset only after boot. */
++		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
++		    false, step >= 10, step >= 11, false, false);
++		timeout(polaris_gx_m1b_release_deferred, NULL, hz * 20);
++		printf("POLARIS GPU: m1d: release scheduled in 20 s; boot continues\n");
++	} else if (step >= 4) {
+ 		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 12, step >= 8,
+ 		    false, step >= 10, step >= 11, step >= 13, step >= 14);
+ 	} else if (step >= 3) {

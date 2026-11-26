@@ -1,0 +1,37 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1507,6 +1507,25 @@
+ 		return;
+ 	}
+ 	printf("POLARIS GPU: deferred release: starting\n");
++
++	/*
++	 * By twenty seconds the domain is off again: 0139's run read back zeros for both the
++	 * reset register and the table address we had just written, which is what a powered
++	 * down block looks like. So power CX up first and prove it stuck before touching the
++	 * GMU - otherwise "clearing the reset" is a write to nothing.
++	 */
++	{
++		vm_offset_t gpucc = ml_io_map((vm_offset_t)0x0509a000ULL, (vm_size_t)0x9090ULL);
++
++		if (gpucc != 0) {
++			polaris_gx_m1a_cx(gpucc);
++			delay(1000);
++			printf("POLARIS GPU: deferred release: cx re-powered, hw_ctrl 0x%08x (%s)\n",
++			    polaris_reg_rd(gpucc, 0x1500u),
++			    (polaris_reg_rd(gpucc, 0x1500u) & 0x80000000u) ? "on" : "STILL OFF");
++		}
++	}
++
+ 	sr = *(volatile uint32_t *)(uintptr_t)(win + 0x5000u * 4u);
+ 	cfg = *(volatile uint32_t *)(uintptr_t)(win + 0x5001u * 4u);
+ 	printf("POLARIS GPU: deferred release: sysreset 0x%08x bootcfg 0x%08x\n", sr, cfg);
+@@ -1733,7 +1752,7 @@
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
+-	if (step == 18) {
++	if (step >= 18) {
+ 		/* Prepare everything now, but let the CM3 out of reset only after boot. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, step >= 11, false, false);
