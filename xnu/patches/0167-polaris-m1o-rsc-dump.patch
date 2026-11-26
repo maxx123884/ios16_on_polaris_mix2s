@@ -1,0 +1,55 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -2001,6 +2001,40 @@
+ 	sweet_log_sync();
+ }
+ 
++
++/*
++ * M1o: read the RSC block's shape, not just its first word.
++ *
++ * The RSC answered once from the shim (0x00A200AB at offset zero, 0x00010100 at 0x1000), and
++ * rpmh-rsc puts the TCS arrays at DRV base + 0x2A0 with 12-byte commands after that. A
++ * read-only walk tells us whether those offsets exist here and what they hold, which is the
++ * last thing missing before any vote can be written.
++ */
++static void
++polaris_gx_m1o_rsc_dump(void)
++{
++	vm_offset_t rsc = ml_io_map((vm_offset_t)0x0B220000ULL, (vm_size_t)0x1000);
++	unsigned int off;
++
++	if (rsc == 0) {
++		printf("POLARIS GPU: m1o: rsc map failed\n");
++		return;
++	}
++	printf("POLARIS GPU: m1o: RSC dump from 0x0B220000\n");
++	sweet_log_sync();
++	delay(300000);
++
++	for (off = 0; off < 0x340; off += 16) {
++		printf("POLARIS GPU: m1o: %03x %08x %08x %08x %08x\n", off,
++		    polaris_reg_rd_b(rsc, off), polaris_reg_rd_b(rsc, off + 4u),
++		    polaris_reg_rd_b(rsc, off + 8u), polaris_reg_rd_b(rsc, off + 12u));
++		sweet_log_sync();
++		delay(120000);
++	}
++	printf("POLARIS GPU: m1o: dump complete\n");
++	sweet_log_sync();
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -2308,6 +2342,11 @@
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
++	if (step == 50) {
++		polaris_gx_m1o_rsc_dump();
++		step = 0;
++	}
++
+ 	if (step == 10) {
+ 		vm_offset_t cdb = ml_io_map((vm_offset_t)0x0C3F0000ULL, (vm_size_t)0x1000);
+ 

@@ -143,8 +143,11 @@ def main() -> None:
     args = parser.parse_args()
 
     text = load_log(args.log)
-    data = reassemble(text)
-    entries = walk_entries(data)
+    try:
+        data = reassemble(text)
+        entries = walk_entries(data)
+    except CommandDbParseError as exc:
+        parser.error(str(exc))
 
     if not entries:
         print('(no command-DB entries parsed)')

@@ -93,34 +93,11 @@ polaris_gmu_peek(void)
 	 * start in these experiments, the shim never is - so read them here, where a result is
 	 * guaranteed and the screen is the output.
 	 */
-	{
-		/*
-		 * The command DB maps resource names to the addresses a TCS vote must name, and the
-		 * kernel cannot read it - the same address faults from XNU but reads fine here with
-		 * the MMU off. So scan it here and show only the entries whose names mention the GPU,
-		 * which is a handful of lines instead of a screenful of hex.
-		 */
-		const volatile unsigned char *cdb = (const volatile unsigned char *)0x0C3F0000UL;
-		int off, shown = 0, i;
+	/* The command DB scan that lived here faulted at 0x0C3F000C and panicked the
+	 * loader before XNU was ever entered - which is why several builds produced no
+	 * kernel output at all. The table is read from debugfs instead (0167 onwards), so
+	 * nothing here needs to touch that memory. */
 
-		for (off = 0; off < 0x2000 && shown < 6; off++) {
-			if (cdb[off] == 'g' && cdb[off + 1] == 'p' && cdb[off + 2] == 'u') {
-				char name[17];
-
-				for (i = 0; i < 16; i++) {
-					unsigned char c = cdb[off + i];
-
-					name[i] = (c >= 32 && c < 127) ? (char)c : '.';
-				}
-				name[16] = 0;
-				con_hex8("GPU@", (uint32_t)(0x0C3F0000UL + off));
-				con_str("NAME", name);
-				shown++;
-			}
-		}
-		con_hex8("HITS", (uint32_t)shown);
-	}
-	delay_ms(20000);
 }
 
 
@@ -1355,8 +1332,6 @@ void shim_main(uint64_t dtb)
 		con_hex2("RAM", "MiB=", (uint32_t)(mem_size[i] >> 20), "idx=", i);
 	if (!nmem)
 		con_str("RAM", "no /memory reg in DTB");
-	con_skip();
-	polaris_gmu_peek();
 	con_skip();
 	polaris_hfi_seed();
 	con_skip();
