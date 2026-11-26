@@ -1,0 +1,20 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1698,7 +1698,16 @@
+ 	 * fifteen seconds in a kernel thread costs nothing here and cannot be silently
+ 	 * swallowed by scheduler semantics we cannot see.
+ 	 */
+-	delay(15000000);
++	{
++		/* One long delay() never came back either; fifteen of one second, each printed,
++		 * so a cap on a single call shows up as a partial count instead of silence. */
++		int s;
++
++		for (s = 0; s < 15; s++) {
++			delay(1000000);
++			printf("POLARIS GPU: m1e thread: %d s\n", s + 1);
++		}
++	}
+ 	printf("POLARIS GPU: m1e thread: awake\n");
+ 	polaris_gx_m1e_vendor_deferred(NULL);
+ }

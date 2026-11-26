@@ -516,3 +516,59 @@ POLARIS GPU: m1b boot: entering (first print before any register)
 域由 AOP 管着，我们在和它抢：早期手动上电后立刻放复位 → AOP 同时在收电 → 总线被拖死。
 要真正让 CM3 跑起来，需要**按厂商协议拿电**（RPMh/AOP 投票），而不是直接在 GPUCC 里写 bit。
 这是一个独立的、比前面所有工作量都大的方向。
+
+## 25. **重大修正：之前所有 GMU 寄存器偏移都是错的**（2026-11-26 23:50）
+
+读厂商 KGSL 源码（`build/a6xx.c` + `a6xx_reg.h`，本机就有）后发现，
+本移植一直使用的偏移（`0x5000` 起）**不是 GMU CSR 的偏移**：
+
+| 寄存器 | 一直用的 | 厂商真值 |
+|---|---|---|
+| `CM3_SYSRESET` | `0x5000` | **`0x1F800`** |
+| `CM3_BOOT_CONFIG` | `0x5001` | **`0x1F801`** |
+| `CM3_FW_INIT_RESULT` | `0x501C` | **`0x1F81C`** |
+| `HFI_SFR_ADDR` | `0x5182` | **`0x1F982`** |
+| `HFI_QTBL_INFO` | `0x5184` | **`0x1F984`** |
+| `HFI_QTBL_ADDR` | `0x5185` | **`0x1F985`** |
+| `GMU_GENERAL_7` | 从未写 | `0x1F9CC` |
+| `AHB_FENCE_RANGE_0` | 从未写 | `0x23B11` |
+
+所以之前那些"写入后读回一致"的验证，**验证的是另外一组寄存器**。
+
+### 还有三处语义错误（同样来自厂商源码）
+
+1. **`HFI_SFR_ADDR` 写的不是地址，是芯片 ID**——本移植写的是 `pa + 120`，
+   固件读到的"chipid"是 `0x9DCE6078` 这种荒唐值；
+2. 启动前必须 **`CM3_FW_INIT_RESULT = 0`** 清零，才能判断拿到的是新值；
+3. 等待的判据是**精确值 `0xBABEFACE`**，不是"非零"。
+
+顺带修正前一条结论：`enum gmu_load_mode { CACHED_LOAD_BOOT=0, CACHED_BOOT=1, TCM_BOOT=2, ... }`，
+**`BOOT_CONFIG = 2` 本来就是对的**。之前"0x2 是凶手"的结论是错的——真凶是写错的 SFR
+（固件拿到假 chipid）加上写错的偏移。
+
+### 正确的序列（已实现为 `0142`/`0146`，尚未跑通）
+
+```
+GENERAL_7 = 1                      # TCM 保持
+CM3_FW_INIT_RESULT = 0             # 清旧值
+CM3_BOOT_CONFIG = 2                # TCM_BOOT
+HFI_QTBL_ADDR = 0x9DCE6000
+HFI_QTBL_INFO = 1
+AHB_FENCE_RANGE_0 = 0x80A008A0
+HFI_SFR_ADDR = 0x06030000          # a630 chipid
+SYS_BUS_CONFIG = 1 ; PWR_COL_IFPC = 0x9C40400
+SYSRESET = 1 ; wmb ; SYSRESET = 0
+poll FW_INIT_RESULT == 0xBABEFACE (10 ms)
+HFI_CTRL_INIT = 1 ; poll HFI_CTRL_STATUS bit0
+```
+
+## 26. 纪律：**挂死之后必须冷启动**（2026-11-27 02:00）
+
+`=24`（内联厂商序列）这一轮 ring **完全是上一轮的残留**，说明载荷根本没跑。
+同类现象已出现三次，规律是：
+
+> 一次挂死（热复位救回）之后，**下一轮启动我们的内核不会写任何 ring 内容**。
+
+热复位不清 GPU 状态，探针在控制台就绪前就访问到脏的 GMU，早期崩溃且无法记录。
+所以：**任何一次挂死之后，必须先长按电源彻底断电，再进 fastboot 做下一轮。**
+这条不是建议，是前置条件——否则测出来的是"脏状态"，不是我们的代码。

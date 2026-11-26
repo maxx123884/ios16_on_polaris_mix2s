@@ -1,0 +1,153 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1549,6 +1549,134 @@
+ 	    *(volatile uint32_t *)(uintptr_t)(win + 0x5185u * 4u));
+ }
+ 
++
++/*
++ * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
++ *
++ * Everything before this used offsets beginning at 0x5000 for the GMU CSRs. The
++ * authoritative map in a6xx_reg.h says otherwise - CM3_SYSRESET is 0x1F800, the HFI
++ * table registers are 0x1F984/0x1F985, and CM3_FW_INIT_RESULT is 0x1F81C - so the
++ * earlier writes were landing somewhere else entirely and the readbacks proved only
++ * that those other registers were writable.
++ *
++ * Three more things the vendor does and this port did not: GMU_GENERAL_7 = 1 (TCM
++ * retention) before the start, clearing FW_INIT_RESULT first so the value is fresh, and
++ * writing the *chip id* to HFI_SFR_ADDR rather than an address. The wait is for the
++ * exact value 0xBABEFACE, not merely for a non-zero one.
++ */
++#define POLARIS_V_GENERAL_7		0x1F9CCu
++#define POLARIS_V_SYSRESET		0x1F800u
++#define POLARIS_V_BOOT_CONFIG		0x1F801u
++#define POLARIS_V_FW_INIT_RESULT	0x1F81Cu
++#define POLARIS_V_HFI_SFR_ADDR	0x1F982u
++#define POLARIS_V_QTBL_INFO		0x1F984u
++#define POLARIS_V_QTBL_ADDR		0x1F985u
++#define POLARIS_V_HFI_CTRL_INIT	0x1F986u
++#define POLARIS_V_HFI_CTRL_STATUS	0x1F980u
++#define POLARIS_V_SYS_BUS_CONFIG	0x1F40Fu
++#define POLARIS_V_PWR_COL_IFPC	0x1F8C0u
++#define POLARIS_V_FENCE_RANGE_0	0x23B11u
++#define POLARIS_V_BOOT_MAGIC		0xBABEFACEu
++#define POLARIS_V_TCM_BOOT		2u
++#define POLARIS_V_FENCE_MASK		0x80A008A0u
++#define POLARIS_V_CHIPID_A630		0x06030000u
++
++static void
++polaris_gx_m1e_vendor_boot(vm_offset_t win)
++{
++	uint32_t v;
++	unsigned int i;
++	bool ran;
++
++	printf("POLARIS GPU: m1e: entering, vendor offsets\n");
++	printf("POLARIS GPU: m1e before: sysreset 0x%08x bootcfg 0x%08x init 0x%08x\n",
++	    polaris_reg_rd(win, POLARIS_V_SYSRESET),
++	    polaris_reg_rd(win, POLARIS_V_BOOT_CONFIG),
++	    polaris_reg_rd(win, POLARIS_V_FW_INIT_RESULT));
++
++	polaris_reg_wr(win, POLARIS_V_GENERAL_7, 1u);		/* TCM retention */
++	polaris_reg_wr(win, POLARIS_V_FW_INIT_RESULT, 0u);	/* so the value is fresh */
++	polaris_reg_wr(win, POLARIS_V_BOOT_CONFIG, POLARIS_V_TCM_BOOT);
++
++	polaris_reg_wr(win, POLARIS_V_QTBL_ADDR, POLARIS_HFI_PA);
++	polaris_reg_wr(win, POLARIS_V_QTBL_INFO, 1u);
++	polaris_reg_wr(win, POLARIS_V_FENCE_RANGE_0, POLARIS_V_FENCE_MASK);
++	/* not an address: the firmware reads the chip id from here */
++	polaris_reg_wr(win, POLARIS_V_HFI_SFR_ADDR, POLARIS_V_CHIPID_A630);
++
++	/* idle configuration the vendor applies right before the start */
++	polaris_reg_wr(win, POLARIS_V_SYS_BUS_CONFIG, 1u);
++	polaris_reg_wr(win, POLARIS_V_PWR_COL_IFPC, 0x9C40400u);
++
++	printf("POLARIS GPU: m1e programmed: tbl 0x%08x info 0x%08x sfr 0x%08x fence 0x%08x\n",
++	    polaris_reg_rd(win, POLARIS_V_QTBL_ADDR),
++	    polaris_reg_rd(win, POLARIS_V_QTBL_INFO),
++	    polaris_reg_rd(win, POLARIS_V_HFI_SFR_ADDR),
++	    polaris_reg_rd(win, POLARIS_V_FENCE_RANGE_0));
++
++	/* reset, make sure it lands, then release */
++	polaris_reg_wr(win, POLARIS_V_SYSRESET, 1u);
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++	printf("POLARIS GPU: m1e: reset asserted, releasing now\n");
++	polaris_reg_wr(win, POLARIS_V_SYSRESET, 0u);
++#if defined(__aarch64__)
++	__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++
++	ran = false;
++	for (i = 0; i < 2000; i++) {			/* 10 ms, the vendor's timeout */
++		v = polaris_reg_rd(win, POLARIS_V_FW_INIT_RESULT);
++		if (v == POLARIS_V_BOOT_MAGIC) {
++			ran = true;
++			break;
++		}
++		delay(5);
++	}
++	printf("POLARIS GPU: m1e: fw_init 0x%08x after %u polls: %s\n", v, i,
++	    ran ? "0xBABEFACE - the firmware booted" : "not the magic value");
++
++	if (ran) {
++		polaris_reg_wr(win, POLARIS_V_HFI_CTRL_INIT, 1u);
++		delay(200);
++		printf("POLARIS GPU: m1e: hfi_status 0x%08x (bit0 %s)\n",
++		    polaris_reg_rd(win, POLARIS_V_HFI_CTRL_STATUS),
++		    (polaris_reg_rd(win, POLARIS_V_HFI_CTRL_STATUS) & 1u) ? "set" : "clear");
++	}
++}
++
++
++/* Deferred entry: print first, then map, then make sure the domain is on before the
++ * vendor sequence - at twenty seconds the platform has already taken CX away, and every
++ * GMU register reads zero in that state. */
++static void
++polaris_gx_m1e_vendor_deferred(void *arg)
++{
++	vm_offset_t win, gpucc;
++
++	(void)arg;
++	printf("POLARIS GPU: m1e deferred: entering\n");
++
++	gpucc = ml_io_map((vm_offset_t)0x0509a000ULL, (vm_size_t)0x9090ULL);
++	if (gpucc != 0) {
++		polaris_gx_m1a_cx(gpucc);
++		delay(1000);
++		printf("POLARIS GPU: m1e deferred: cx hw_ctrl 0x%08x (%s)\n",
++		    polaris_reg_rd(gpucc, 0x1500u),
++		    (polaris_reg_rd(gpucc, 0x1500u) & 0x80000000u) ? "on" : "STILL OFF");
++	} else {
++		printf("POLARIS GPU: m1e deferred: gpucc map failed\n");
++	}
++
++	win = ml_io_map((vm_offset_t)POLARIS_GMU_PA, (vm_size_t)POLARIS_GMU_SIZE);
++	if (win == 0) {
++		printf("POLARIS GPU: m1e deferred: gmu map failed\n");
++		return;
++	}
++	polaris_gx_m1e_vendor_boot(win);
++}
++
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+     bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare, bool where_report,
+@@ -1756,8 +1884,13 @@
+ 		/* Prepare everything now, but let the CM3 out of reset only after boot. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, step >= 11, false, false);
+-		timeout(polaris_gx_m1b_release_deferred, NULL, hz * 20);
+-		printf("POLARIS GPU: m1d: release scheduled in 20 s; boot continues\n");
++		if (step >= 20) {
++			timeout(polaris_gx_m1e_vendor_deferred, NULL, hz * 20);
++			printf("POLARIS GPU: m1e: vendor boot scheduled in 20 s\n");
++		} else {
++			timeout(polaris_gx_m1b_release_deferred, NULL, hz * 20);
++			printf("POLARIS GPU: m1d: release scheduled in 20 s; boot continues\n");
++		}
+ 	} else if (step >= 4) {
+ 		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 12, step >= 8,
+ 		    false, step >= 10, step >= 11, step >= 13, step >= 14);

@@ -1,0 +1,19 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1691,8 +1691,14 @@
+ {
+ 	static int chan;
+ 
+-	printf("POLARIS GPU: m1e thread: started, sleeping 15 s\n");
+-	(void)tsleep(&chan, 0, "polarism1e", 15 * hz);
++	(void)chan;
++	printf("POLARIS GPU: m1e thread: started, waiting 15 s\n");
++	/*
++	 * tsleep never came back from this context, so this waits the crude way. A busy
++	 * fifteen seconds in a kernel thread costs nothing here and cannot be silently
++	 * swallowed by scheduler semantics we cannot see.
++	 */
++	delay(15000000);
+ 	printf("POLARIS GPU: m1e thread: awake\n");
+ 	polaris_gx_m1e_vendor_deferred(NULL);
+ }

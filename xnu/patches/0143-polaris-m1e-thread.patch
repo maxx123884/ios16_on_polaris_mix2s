@@ -1,0 +1,53 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -258,6 +258,8 @@
+ extern void bzero(void *b, size_t len);
+ extern void timeout(void (*fn)(void *), void *arg, int ticks);
+ extern int hz;
++extern kern_return_t kernel_thread_start(void (*fn)(void *, wait_result_t), void *arg, thread_t *out);
++extern int tsleep(void *chan, int pri, const char *wmesg, int timo);
+ extern void kfree(void *addr, vm_size_t size);
+ extern unsigned int ml_get_cpu_count(void);	/* for the CPU liveness report */
+ 
+@@ -1677,6 +1679,24 @@
+ 	polaris_gx_m1e_vendor_boot(win);
+ }
+ 
++static void polaris_gx_m1e_vendor_deferred(void *arg);
++
++
++/* A kernel thread is a reliable trigger where timeout() was not: the scheduler is up long
++ * before this probe runs, and the thread keeps its own stack. It sleeps fifteen seconds,
++ * by which point the platform has taken CX away - which is exactly why the sequence
++ * re-powers it first. */
++static void
++polaris_m1e_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	static int chan;
++
++	printf("POLARIS GPU: m1e thread: started, sleeping 15 s\n");
++	(void)tsleep(&chan, 0, "polarism1e", 15 * hz);
++	printf("POLARIS GPU: m1e thread: awake\n");
++	polaris_gx_m1e_vendor_deferred(NULL);
++}
++
+ static void
+ polaris_gx_m1a_clocks(vm_offset_t gcc, vm_offset_t gpucc, bool itcm_test,
+     bool state_report, bool boot_cm3, bool smmu_report, bool hfi_prepare, bool where_report,
+@@ -1885,8 +1905,14 @@
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, step >= 11, false, false);
+ 		if (step >= 20) {
+-			timeout(polaris_gx_m1e_vendor_deferred, NULL, hz * 20);
+-			printf("POLARIS GPU: m1e: vendor boot scheduled in 20 s\n");
++			thread_t th;
++
++			if (kernel_thread_start(polaris_m1e_thread, NULL, &th) == KERN_SUCCESS) {
++				thread_deallocate(th);
++				printf("POLARIS GPU: m1e: thread started, vendor boot in 15 s\n");
++			} else {
++				printf("POLARIS GPU: m1e: thread start FAILED\n");
++			}
+ 		} else {
+ 			timeout(polaris_gx_m1b_release_deferred, NULL, hz * 20);
+ 			printf("POLARIS GPU: m1d: release scheduled in 20 s; boot continues\n");
