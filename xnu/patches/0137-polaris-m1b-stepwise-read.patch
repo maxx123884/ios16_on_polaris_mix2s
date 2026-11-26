@@ -1,0 +1,59 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1118,7 +1118,7 @@
+ {
+ 	uint32_t sr_before = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u);
+ 	uint32_t bc_before = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u);
+-	uint32_t fw = 0, waited;
++	uint32_t fw = 0;
+ 	bool ran = false;
+ 
+ 	printf("POLARIS GPU: m1b boot before: sysreset 0x%08x bootcfg 0x%08x\n",
+@@ -1150,20 +1150,25 @@
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+ 
+-	/* give the firmware a moment, then look */
+-	for (waited = 0; waited <= 50000; waited += 500) {
+-		fw = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_FWINIT * 4u);
+-		if (fw != 0) {
+-			ran = true;
+-			break;
+-		}
+-		delay(500);
+-	}
+-	printf("POLARIS GPU: m1b boot after: sysreset 0x%08x bootcfg 0x%08x fw_init 0x%08x hfi 0x%08x: %s\n",
++	/*
++	 * Stepwise, one marker per action: 0136 lost the whole block after the release and
++	 * printed only a line of spaces, so the question is whether reading the GMU is what
++	 * breaks. Each read gets its own line, before and after.
++	 */
++	printf("POLARIS GPU: m1b boot marker: reset released, about to read fw_init\n");
++	delay(1000);
++	fw = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_FWINIT * 4u);
++	printf("POLARIS GPU: m1b boot fw_init read back 0x%08x\n", fw);
++	delay(1000);
++	printf("POLARIS GPU: m1b boot marker: about to read hfi_status\n");
++	delay(1000);
++	printf("POLARIS GPU: m1b boot hfi_status read back 0x%08x\n",
++	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_HFISTATUS * 4u));
++	ran = (fw != 0);
++	printf("POLARIS GPU: m1b boot after: sysreset 0x%08x bootcfg 0x%08x fw_init 0x%08x: %s\n",
+ 	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_SYSRESET * 4u),
+-	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u),
+-	    fw, *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_HFISTATUS * 4u),
+-	    ran ? "FW_INIT non-zero - the CM3 ran" : "FW_INIT still zero after 50 ms");
++	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_BOOTCFG * 4u), fw,
++	    ran ? "FW_INIT non-zero - the CM3 ran" : "FW_INIT still zero");
+ 
+ 	/* put it back the way XBL left it */
+ 	printf("POLARIS GPU: m1b boot restore sysreset 0x%08x bootcfg 0x%08x\n",
+@@ -1676,7 +1681,7 @@
+ 
+ 	if (step >= 4) {
+ 		polaris_gx_m1a_clocks(gcc, gpucc, step == 5, step >= 6, step == 12, step >= 8,
+-		    false, step >= 10, step >= 11, step >= 13, step == 14);
++		    false, step >= 10, step >= 11, step >= 13, step >= 14);
+ 	} else if (step >= 3) {
+ 		polaris_gx_m1a_cx(gpucc);
+ 	}

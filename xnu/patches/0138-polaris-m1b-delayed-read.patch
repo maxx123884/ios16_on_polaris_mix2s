@@ -1,0 +1,22 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1155,13 +1155,15 @@
+ 	 * printed only a line of spaces, so the question is whether reading the GMU is what
+ 	 * breaks. Each read gets its own line, before and after.
+ 	 */
+-	printf("POLARIS GPU: m1b boot marker: reset released, about to read fw_init\n");
+-	delay(1000);
++	/*
++	 * Nothing at all for two seconds after the release. 0136 polled immediately and
++	 * survived, 0137 printed first and died - which reads like a race rather than a
++	 * rule. Give whatever the CM3 does time to finish before touching the window.
++	 */
++	delay(2000000);
+ 	fw = *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_FWINIT * 4u);
+ 	printf("POLARIS GPU: m1b boot fw_init read back 0x%08x\n", fw);
+ 	delay(1000);
+-	printf("POLARIS GPU: m1b boot marker: about to read hfi_status\n");
+-	delay(1000);
+ 	printf("POLARIS GPU: m1b boot hfi_status read back 0x%08x\n",
+ 	    *(volatile uint32_t *)(uintptr_t)(gmuwin + POLARIS_GMU_HFISTATUS * 4u));
+ 	ran = (fw != 0);
