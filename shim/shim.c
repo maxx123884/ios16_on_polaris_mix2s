@@ -61,6 +61,37 @@ static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 extern char secondary_entry[];
 
 /*
+ * M1l: ask the GMU, from the one place that might still have power.
+ *
+ * XNU cannot reach the GMU: the RSCC registers that would switch it on live inside its own
+ * unpowered window, so the request cannot be made from a context where the block is off.
+ * The shim runs with the MMU off and before the platform's power management is in charge -
+ * the same window in which XBL initialises the GPU - so the CSRs may still answer here.
+ *
+ * Read only: one load from CM3_SYSRESET, printed on screen and held for thirty seconds so it
+ * can be photographed. Nothing is written, so nothing can be left in a bad state.
+ */
+static void delay_ms(unsigned ms);
+
+#define POLARIS_GMU_BASE	0x0506A000UL
+#define POLARIS_GMU_SYSRESET	0x1F800UL
+
+static void
+polaris_gmu_peek(void)
+{
+	volatile uint32_t *p = (volatile uint32_t *)(POLARIS_GMU_BASE + POLARIS_GMU_SYSRESET);
+	uint32_t v = *p;
+
+	con_str("GMU", "read from shim stage (MMU off)");
+	con_hex8("ADDR", (uint32_t)(POLARIS_GMU_BASE + POLARIS_GMU_SYSRESET));
+	con_hex8("SYSRESET", v);
+	con_str("GMU", v ? "NON-ZERO: the block is powered here" : "zero: not powered even here");
+	delay_ms(30000);
+}
+
+
+
+/*
  * Seed the GMU's HFI queue table where the hardware can actually name it.
  *
  * HFI_QTBL_ADDR is a 32-bit register and this device's DRAM starts at 0x100000000, so
@@ -1290,6 +1321,8 @@ void shim_main(uint64_t dtb)
 		con_hex2("RAM", "MiB=", (uint32_t)(mem_size[i] >> 20), "idx=", i);
 	if (!nmem)
 		con_str("RAM", "no /memory reg in DTB");
+	con_skip();
+	polaris_gmu_peek();
 	con_skip();
 	polaris_hfi_seed();
 	con_skip();
