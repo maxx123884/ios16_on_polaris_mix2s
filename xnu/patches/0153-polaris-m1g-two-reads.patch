@@ -1,0 +1,59 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1602,6 +1602,37 @@
+ 	printf("POLARIS GPU: m1f walk: done, all offsets answered\n");
+ }
+ 
++
++/*
++ * Two reads, one boot, with the log forced out between them.
++ *
++ * +0x14610 is known to answer - the old HFI code read it and got values back. +0x1F800 is
++ * CM3_SYSRESET, the register the whole M1b step has been aiming at. Reading the known one
++ * first means that if the machine dies, the last line on disk says whether it died on a
++ * read that should work, on the flush, or on the register we actually need.
++ */
++static void
++polaris_gx_m1g_probe_two(vm_offset_t win)
++{
++	uint32_t v;
++
++	printf("POLARIS GPU: m1g: probe A, reading +0x14610 (known good)\n");
++	sweet_log_sync();
++	delay(300000);
++	v = polaris_reg_rd_b(win, 0x14610u);
++	printf("POLARIS GPU: m1g: A +0x14610 = 0x%08x\n", v);
++	sweet_log_sync();
++	delay(300000);
++
++	printf("POLARIS GPU: m1g: probe B, reading +0x1F800 (CM3_SYSRESET)\n");
++	sweet_log_sync();
++	delay(300000);
++	v = polaris_reg_rd_b(win, 0x1F800u);
++	printf("POLARIS GPU: m1g: B +0x1F800 = 0x%08x\n", v);
++	sweet_log_sync();
++	printf("POLARIS GPU: m1g: both reads answered\n");
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -1917,7 +1948,17 @@
+ 		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, false, false, false);
+-		if (step >= 30) {
++		if (step >= 31) {
++			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
++			    (vm_size_t)POLARIS_GMU_SIZE);
++
++			if (w != 0) {
++				polaris_gx_m1g_probe_two(w);
++			} else {
++				printf("POLARIS GPU: m1g: map failed\n");
++			}
++			step = 0;
++		} else if (step >= 30) {
+ 			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
+ 			    (vm_size_t)POLARIS_GMU_SIZE);
+ 

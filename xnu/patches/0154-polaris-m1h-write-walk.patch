@@ -1,0 +1,75 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1633,6 +1633,53 @@
+ 	printf("POLARIS GPU: m1g: both reads answered\n");
+ }
+ 
++
++/*
++ * One write at a time, flushed before and after each, so the register that takes the
++ * machine down is the last one named on disk.
++ *
++ * The two-read probe showed the CSRs are reachable - +0x1F800 answered zero rather than
++ * faulting - so the m1e hang is one of the writes, not the addressing.
++ */
++static void
++polaris_gx_m1h_write_walk(vm_offset_t win)
++{
++	static const struct {
++		const char *name;
++		uint32_t off, val;
++	} w[] = {
++		{ "GENERAL_7 (TCM retention)", 0x1F9CCu, 1u },
++		{ "FW_INIT_RESULT clear",      0x1F81Cu, 0u },
++		{ "BOOT_CONFIG = 2",           0x1F801u, 2u },
++		{ "QTBL_ADDR",                 0x1F985u, POLARIS_HFI_PA },
++		{ "QTBL_INFO",                 0x1F984u, 1u },
++		{ "AHB_FENCE_RANGE_0",         0x23B11u, 0x80A008A0u },
++		{ "HFI_SFR_ADDR (chip id)",    0x1F982u, 0x06030000u },
++		{ "SYS_BUS_CONFIG",            0x1F40Fu, 1u },
++		{ "PWR_COL_IFPC",              0x1F8C0u, 0x9C40400u },
++	};
++	unsigned int i;
++
++	for (i = 0; i < sizeof(w) / sizeof(w[0]); i++) {
++		uint32_t back;
++
++		printf("POLARIS GPU: m1h: writing %s (+0x%05x = 0x%08x)\n",
++		    w[i].name, w[i].off, w[i].val);
++		sweet_log_sync();
++		delay(200000);
++		polaris_reg_wr_b(win, w[i].off, w[i].val);
++#if defined(__aarch64__)
++		__asm__ volatile ("dsb sy" ::: "memory");
++#endif
++		back = polaris_reg_rd_b(win, w[i].off);
++		printf("POLARIS GPU: m1h:   read back 0x%08x (%s)\n", back,
++		    back == w[i].val ? "took" : "did not take");
++		sweet_log_sync();
++		delay(200000);
++	}
++	printf("POLARIS GPU: m1h: all writes done, no fault\n");
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -1948,7 +1995,17 @@
+ 		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, false, false, false);
+-		if (step >= 31) {
++		if (step >= 32) {
++			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
++			    (vm_size_t)POLARIS_GMU_SIZE);
++
++			if (w != 0) {
++				polaris_gx_m1h_write_walk(w);
++			} else {
++				printf("POLARIS GPU: m1h: map failed\n");
++			}
++			step = 0;
++		} else if (step >= 31) {
+ 			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
+ 			    (vm_size_t)POLARIS_GMU_SIZE);
+ 
