@@ -60,6 +60,63 @@ static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 
 extern char secondary_entry[];
 
+/*
+ * Seed the GMU's HFI queue table where the hardware can actually name it.
+ *
+ * HFI_QTBL_ADDR is a 32-bit register and this device's DRAM starts at 0x100000000, so
+ * no page XNU owns can ever satisfy it - kalloc returns high pages, kmem_alloc_contig
+ * answers KERN_NO_SPACE. The last page of the *visible* framebuffer is below the
+ * ceiling and backed (the screen is proof), so the table is written there with the MMU
+ * still off, and XNU only has to pass the address on. Nothing in the kernel has to map
+ * low memory, which is what killed the two previous attempts.
+ *
+ * Address is duplicated in bsd/dev/polaris_gpu.c as POLARIS_HFI_PA; keep them equal.
+ */
+#define POLARIS_HFI_PA		0x9DCE6000UL
+#define POLARIS_HFI_PAGE	4096U
+
+static void
+polaris_hfi_seed(void)
+{
+	volatile uint32_t *p = (volatile uint32_t *)POLARIS_HFI_PA;
+	uint32_t base = (uint32_t)POLARIS_HFI_PA;
+	uint32_t q0 = base + 24u + 2u * 48u;		/* table header + two queue headers */
+	uint32_t q1 = q0 + 1536u;
+
+	/* table header: version, size, offsets of the two queue headers, their sizes */
+	p[0] = 0;					/* version */
+	p[1] = 24u + 2u * 48u;				/* size */
+	p[2] = 24u;					/* qhdr0_offset */
+	p[3] = 72u;					/* qhdr1_offset */
+	p[4] = 48u;					/* qhdr0_size */
+	p[5] = 48u;					/* qhdr1_size */
+
+	/* queue 0: host to GMU */
+	p[6] = 1u;					/* status: ready */
+	p[7] = q0;					/* start_addr */
+	p[8] = 0u;					/* type */
+	p[9] = 1536u;					/* queue_size */
+	p[10] = 1536u;					/* msg_size */
+	p[13] = 1536u / 4u;				/* rx_watermark */
+	p[14] = 1536u / 4u;				/* tx_watermark */
+
+	/* queue 1: GMU to host */
+	p[18] = 1u;
+	p[19] = q1;
+	p[20] = 1u;
+	p[21] = 1536u;
+	p[22] = 1536u;
+	p[25] = 1536u / 4u;
+	p[26] = 1536u / 4u;
+
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	con_hex2("HFI", "pa=", base,
+	    "back=", p[0] == 0u && p[1] == 120u && p[7] == q0 ? 1u : 0u);
+}
+
+
+
 static const char *stage;	/* set at runtime: no absolute pointers in data */
 static volatile uint64_t sec_mpidr[NR_CPUS];
 static volatile uint64_t sec_probe[4];	/* CPU1 redistributor write test */
@@ -1233,6 +1290,8 @@ void shim_main(uint64_t dtb)
 		con_hex2("RAM", "MiB=", (uint32_t)(mem_size[i] >> 20), "idx=", i);
 	if (!nmem)
 		con_str("RAM", "no /memory reg in DTB");
+	con_skip();
+	polaris_hfi_seed();
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
