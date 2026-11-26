@@ -90,3 +90,54 @@ version than 2.7, or the TCS area starts elsewhere.
 `DRV_PRNT_CHLD_CONFIG` (0x0C) and the DRV id at 0x00 of candidate bases 0x0, 0x1000, 0x2000,
 0x3000 to find where a DRV actually begins. A vote written to a wrong base is a whole-device
 power event, not a GPU one.
+
+## RESOLVED: the DRV base is 0x0B221000, not 0x0B220000 (`0169`, `=51`)
+
+Scanning candidate bases inside the RSC block:
+
+```
++0x0000  id 00a200a8 solver 00000000 chld 00000000     <- not a DRV
++0x1000  id 00010100 solver 00005483 chld 0060601e     <- a DRV
++0x2000  ... all zero
+```
+
+`id = 0x00010100` decodes as major 1, minor 1, so the **ver 2.7** table applies.
+`solver = 0x00005483` and `chld = 0x0060601e` are plausible configuration words.
+
+Two independent facts agree: the device tree puts `rpmh-master-stats@0xb221200` exactly at
+`0x0B221000 + 0x200`.
+
+That also explains the `=50` dump: reading from `0x0B220000` was one page short of the DRV, so
+the run of `0x4` from 0x110 to 0x308 described nothing at all.
+
+### Final addresses for a vote (ver 2.7)
+
+```
+DRV base       0x0B221000
+IRQ_ENABLE     DRV + 0x00
+IRQ_STATUS     DRV + 0x04
+IRQ_CLEAR      DRV + 0x08
+WAIT_FOR_CMPL  DRV + 0x10
+CONTROL        DRV + 0x14
+CMD_ENABLE     DRV + 0x1C
+TCS[n] base    DRV + 0x2A0 + 672*n
+  CMD_MSGID    TCS + 0x30 + 20*k
+  CMD_ADDR     TCS + 0x34 + 20*k
+  CMD_DATA     TCS + 0x38 + 20*k
+```
+
+So for TCS0, command 0:
+
+```
+msgid  -> 0x0B2212A0 + 0x30 = 0x0B2212D0
+addr   -> 0x0B2212A0 + 0x34 = 0x0B2212D4
+data   -> 0x0B2212A0 + 0x38 = 0x0B2212D8
+enable -> 0x0B221000 + 0x1C = 0x0B22101C
+```
+
+Vote payload for the CX rail: `addr = 0x30000` (cx.lvl), `data = one of the levels listed in
+its aux data` (0x0000, 0x0010, 0x0030, 0x0040, 0x0080, 0x00C0, 0x0100, 0x0180), and
+`msgid = 0x10008` (LEN 8 | WRITE).
+
+**Before the first write, read `IRQ_ENABLE` at 0x0B221000 to learn which TCS numbers this DRV
+actually owns** - the mask tells us which TCS is safe to borrow.

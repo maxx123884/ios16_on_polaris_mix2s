@@ -1,0 +1,58 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -2035,6 +2035,43 @@
+ 	sweet_log_sync();
+ }
+ 
++
++/*
++ * M1p: where does a DRV actually begin inside the RSC block?
++ *
++ * The layout says DRV_SOLVER_CONFIG sits at base+0x04 and DRV_PRNT_CHLD_CONFIG at base+0x0C,
++ * with TCS arrays 0x2A0 into each DRV. The =50 dump shows zeros at 0x04 and 0x0C of the block
++ * and 4s from 0x2A0 on, which does not fit - so scan the candidate DRV bases and look for a
++ * signature. Reads only; nothing is written, so a wrong guess costs nothing.
++ */
++static void
++polaris_gx_m1p_drv_scan(void)
++{
++	static const uint32_t bases[] = { 0x0u, 0x1000u, 0x2000u, 0x3000u, 0x4000u, 0x8000u, 0xC000u };
++	unsigned int i;
++
++	printf("POLARIS GPU: m1p: scanning candidate DRV bases in 0x0B220000\n");
++	sweet_log_sync();
++	delay(300000);
++
++	for (i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
++		vm_offset_t w = ml_io_map((vm_offset_t)(0x0B220000ULL + bases[i]), (vm_size_t)0x1000);
++
++		if (w == 0) {
++			printf("POLARIS GPU: m1p: +0x%05x map failed\n", bases[i]);
++			sweet_log_sync();
++			continue;
++		}
++		printf("POLARIS GPU: m1p: +0x%05x id %08x solver %08x chld %08x irqen %08x\n",
++		    bases[i], polaris_reg_rd_b(w, 0x00u), polaris_reg_rd_b(w, 0x04u),
++		    polaris_reg_rd_b(w, 0x0Cu), polaris_reg_rd_b(w, 0x1Cu));
++		sweet_log_sync();
++		delay(250000);
++	}
++	printf("POLARIS GPU: m1p: scan complete\n");
++	sweet_log_sync();
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -2342,6 +2379,11 @@
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
++	if (step == 51) {
++		polaris_gx_m1p_drv_scan();
++		step = 0;
++	}
++
+ 	if (step == 50) {
+ 		polaris_gx_m1o_rsc_dump();
+ 		step = 0;
