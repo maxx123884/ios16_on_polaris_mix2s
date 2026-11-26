@@ -1,0 +1,60 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1570,6 +1570,38 @@
+ 	*(volatile uint32_t *)(uintptr_t)(win + byte_off) = val;
+ }
+ 
++
++/*
++ * Window walk: read one register at a time, flush after each, so the point where the bus
++ * stops answering is the last line on disk rather than a guess.
++ *
++ * The offsets climb from the start of the mapping to the GMU CSRs. If everything answers,
++ * the window is fine and the earlier hang was something else; if it stops at a particular
++ * offset, that is the region whose clock is missing.
++ */
++static void
++polaris_gx_m1f_walk(vm_offset_t win)
++{
++	static const uint32_t offs[] = {
++		0x0000u, 0x1000u, 0x8000u, 0x10000u, 0x14000u,
++		0x1F000u, 0x1F800u, 0x20000u, 0x23B11u, 0x2FFF0u,
++	};
++	unsigned int i;
++
++	printf("POLARIS GPU: m1f walk: starting\n");
++	sweet_log_sync();
++	delay(300000);
++
++	for (i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
++		uint32_t v = polaris_reg_rd_b(win, offs[i]);
++
++		printf("POLARIS GPU: m1f walk: +0x%05x = 0x%08x\n", offs[i], v);
++		sweet_log_sync();
++		delay(200000);
++	}
++	printf("POLARIS GPU: m1f walk: done, all offsets answered\n");
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -1885,7 +1917,17 @@
+ 		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, false, false, false);
+-		if (step >= 20) {
++		if (step >= 30) {
++			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
++			    (vm_size_t)POLARIS_GMU_SIZE);
++
++			if (w != 0) {
++				polaris_gx_m1f_walk(w);
++			} else {
++				printf("POLARIS GPU: m1f: map failed\n");
++			}
++			step = 0;
++		} else if (step >= 20) {
+ 			/*
+ 			 * Inline, here and now. The thread route stalled the boot around ten seconds
+ 			 * in - the countdown stopped at nine and launchd never got past 59 lines -
