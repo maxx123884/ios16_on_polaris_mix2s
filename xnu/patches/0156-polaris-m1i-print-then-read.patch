@@ -1,0 +1,80 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1698,22 +1698,42 @@
+ static void
+ polaris_gx_m1i_rsc_wake(vm_offset_t win)
+ {
+-	uint32_t ack = 0;
++	uint32_t ack = 0, v;
+ 	unsigned int i;
+ 
+-	printf("POLARIS GPU: m1i: gx_domain_misc 0x%08x, req 0x%08x, ack 0x%08x\n",
+-	    polaris_reg_rd_b(win, POLARIS_V_GX_DOMAIN_MISC),
+-	    polaris_reg_rd_b(win, POLARIS_V_RSCC_CONTROL_REQ),
+-	    polaris_reg_rd_b(win, POLARIS_V_RSCC_CONTROL_ACK));
++	/*
++	 * Print first, read second - separately, never in one statement. Last time the three
++	 * reads sat in a printf argument list, so a fault on the first one meant no line, no
++	 * flush, and no evidence; the same mistake as the marker that had to come before the
++	 * register access.
++	 */
++	printf("POLARIS GPU: m1i: entered\n");
+ 	sweet_log_sync();
+ 	delay(200000);
+ 
+-	printf("POLARIS GPU: m1i: requesting power through RSC (req |= BIT(1))\n");
++	printf("POLARIS GPU: m1i: reading gx_domain_misc (+0x24542)\n");
+ 	sweet_log_sync();
++	v = polaris_reg_rd_b(win, POLARIS_V_GX_DOMAIN_MISC);
++	printf("POLARIS GPU: m1i: gx_domain_misc = 0x%08x\n", v);
++	sweet_log_sync();
++	delay(200000);
++
++	printf("POLARIS GPU: m1i: reading rscc_control_ack (+0x23b08)\n");
++	sweet_log_sync();
++	v = polaris_reg_rd_b(win, POLARIS_V_RSCC_CONTROL_ACK);
++	printf("POLARIS GPU: m1i: ack before = 0x%08x\n", v);
++	sweet_log_sync();
++	delay(200000);
++
++	printf("POLARIS GPU: m1i: writing rscc_control_req = BIT(1)\n");
++	sweet_log_sync();
++	delay(100000);
+ 	polaris_reg_wr_b(win, POLARIS_V_RSCC_CONTROL_REQ, 2u);
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
++	printf("POLARIS GPU: m1i: request written\n");
++	sweet_log_sync();
+ 
+ 	for (i = 0; i < 1000; i++) {
+ 		ack = polaris_reg_rd_b(win, POLARIS_V_RSCC_CONTROL_ACK);
+@@ -1723,7 +1743,7 @@
+ 		delay(10);
+ 	}
+ 	printf("POLARIS GPU: m1i: ack 0x%08x after %u polls (%s)\n", ack, i,
+-	    (ack & 2u) ? "RSC granted the request" : "no ack");
++	    (ack & 2u) ? "RSC granted" : "no ack");
+ 	sweet_log_sync();
+ 	delay(200000);
+ 
+@@ -1744,9 +1764,16 @@
+ 		delay(200000);
+ 	}
+ 
+-	printf("POLARIS GPU: m1i: after wake, +0x14610 = 0x%08x, +0x1F800 = 0x%08x (%s)\n",
+-	    polaris_reg_rd_b(win, 0x14610u), polaris_reg_rd_b(win, 0x1F800u),
+-	    (polaris_reg_rd_b(win, 0x14610u) != 0u) ? "CSRs are alive" : "still zeros");
++	printf("POLARIS GPU: m1i: reading +0x14610 to see if the CSRs woke up\n");
++	sweet_log_sync();
++	v = polaris_reg_rd_b(win, 0x14610u);
++	printf("POLARIS GPU: m1i: +0x14610 = 0x%08x (%s)\n", v,
++	    v != 0u ? "CSRs are alive" : "still zeros");
++	sweet_log_sync();
++	delay(200000);
++
++	v = polaris_reg_rd_b(win, 0x1F800u);
++	printf("POLARIS GPU: m1i: +0x1F800 = 0x%08x\n", v);
+ 	sweet_log_sync();
+ }
+ 

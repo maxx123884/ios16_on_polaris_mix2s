@@ -1,0 +1,79 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1781,6 +1781,57 @@
+ 	sweet_log_sync();
+ }
+ 
++
++/*
++ * M1j: the mapping was four times too small.
++ *
++ * KGSL's accessor is named kgsl_gmu_regread(device, offsetwords, ...) - words. So the values
++ * in a6xx_reg.h are word indices and CM3_SYSRESET sits at byte 0x1F800 * 4 = 0x7E000. This
++ * port maps 0x30000 bytes, so that register, every RSCC register and the AHB fence range
++ * were all outside the window the entire time. Reads inside it returned zero because they
++ * were reading unused space, and anything past it faulted.
++ */
++#define POLARIS_GMU_MAP_SIZE	0x100000ULL
++
++static uint32_t
++polaris_gmu_word_rd(vm_offset_t win, uint32_t words)
++{
++	return *(volatile uint32_t *)(uintptr_t)(win + (uintptr_t)words * 4u);
++}
++
++static void
++polaris_gx_m1j_wide_probe(vm_offset_t win)
++{
++	static const uint32_t regs[] = {
++		0x1F800u,	/* CM3_SYSRESET */
++		0x1F801u,	/* CM3_BOOT_CONFIG */
++		0x1F81Cu,	/* CM3_FW_INIT_RESULT */
++		0x23B07u,	/* RSCC_CONTROL_REQ */
++		0x23B08u,	/* RSCC_CONTROL_ACK */
++	};
++	unsigned int i;
++
++	printf("POLARIS GPU: m1j: entered, window now 0x%llx bytes\n",
++	    (unsigned long long)POLARIS_GMU_MAP_SIZE);
++	sweet_log_sync();
++	delay(300000);
++
++	for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
++		uint32_t v;
++
++		printf("POLARIS GPU: m1j: reading word 0x%05x (byte 0x%x)\n",
++		    regs[i], (unsigned int)(regs[i] * 4u));
++		sweet_log_sync();
++		delay(300000);
++		v = polaris_gmu_word_rd(win, regs[i]);
++		printf("POLARIS GPU: m1j:   0x%05x = 0x%08x\n", regs[i], v);
++		sweet_log_sync();
++		delay(300000);
++	}
++	printf("POLARIS GPU: m1j: all five answered\n");
++	sweet_log_sync();
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -2096,7 +2147,17 @@
+ 		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+ 		    false, step >= 10, false, false, false);
+-		if (step >= 33) {
++		if (step >= 36) {
++			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
++			    (vm_size_t)POLARIS_GMU_MAP_SIZE);
++
++			if (w != 0) {
++				polaris_gx_m1j_wide_probe(w);
++			} else {
++				printf("POLARIS GPU: m1j: map failed\n");
++			}
++			step = 0;
++		} else if (step >= 33) {
+ 			vm_offset_t w = ml_io_map((vm_offset_t)POLARIS_GMU_PA,
+ 			    (vm_size_t)POLARIS_GMU_SIZE);
+ 
