@@ -1,0 +1,22 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1979,7 +1979,9 @@
+ 	sweet_log_sync();
+ 	delay(200000);
+ 
+-	for (off = 0; off < 0x600; off += 16) {
++	/* Sixteen lines, each flushed before the next read: the earlier version buffered the
++	 * whole dump and a fault inside the loop swallowed every line of it. */
++	for (off = 0; off < 0x100; off += 16) {
+ 		char ascii[17];
+ 		unsigned int i;
+ 
+@@ -1992,6 +1994,8 @@
+ 		printf("POLARIS GPU: m1n: %03x %08x %08x %08x %08x |%s|\n", off,
+ 		    polaris_reg_rd_b(cdb, off), polaris_reg_rd_b(cdb, off + 4u),
+ 		    polaris_reg_rd_b(cdb, off + 8u), polaris_reg_rd_b(cdb, off + 12u), ascii);
++		sweet_log_sync();
++		delay(150000);
+ 	}
+ 	printf("POLARIS GPU: m1n: dump done\n");
+ 	sweet_log_sync();

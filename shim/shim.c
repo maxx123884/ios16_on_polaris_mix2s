@@ -94,23 +94,33 @@ polaris_gmu_peek(void)
 	 * guaranteed and the screen is the output.
 	 */
 	{
-		volatile uint32_t *rsc = (volatile uint32_t *)0x0B220000UL;
-		volatile uint32_t *cdb = (volatile uint32_t *)0x0C3F0000UL;
-		int i;
+		/*
+		 * The command DB maps resource names to the addresses a TCS vote must name, and the
+		 * kernel cannot read it - the same address faults from XNU but reads fine here with
+		 * the MMU off. So scan it here and show only the entries whose names mention the GPU,
+		 * which is a handful of lines instead of a screenful of hex.
+		 */
+		const volatile unsigned char *cdb = (const volatile unsigned char *)0x0C3F0000UL;
+		int off, shown = 0, i;
 
-		for (i = 0; i < 4; i++) {
-			con_hex8("RSC", rsc[i]);
+		for (off = 0; off < 0x2000 && shown < 6; off++) {
+			if (cdb[off] == 'g' && cdb[off + 1] == 'p' && cdb[off + 2] == 'u') {
+				char name[17];
+
+				for (i = 0; i < 16; i++) {
+					unsigned char c = cdb[off + i];
+
+					name[i] = (c >= 32 && c < 127) ? (char)c : '.';
+				}
+				name[16] = 0;
+				con_hex8("GPU@", (uint32_t)(0x0C3F0000UL + off));
+				con_str("NAME", name);
+				shown++;
+			}
 		}
-		con_hex8("RSC+", rsc[0x1000 / 4]);
-		for (i = 0; i < 4; i++) {
-			con_hex8("CMDB", cdb[i]);
-		}
-		for (i = 0; i < 4; i++) {
-			con_hex8("CDB8", cdb[8 + i]);
-		}
-		con_str("RPMH", "if the RSC words are not all zero, TCS is reachable");
+		con_hex8("HITS", (uint32_t)shown);
 	}
-	delay_ms(40000);
+	delay_ms(20000);
 }
 
 

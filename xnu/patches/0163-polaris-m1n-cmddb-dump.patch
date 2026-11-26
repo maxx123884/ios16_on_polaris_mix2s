@@ -1,0 +1,62 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1961,6 +1961,42 @@
+ 	sweet_log_sync();
+ }
+ 
++
++/*
++ * Dump the RPMh command DB into the console ring, then parse it on the host.
++ *
++ * The DB maps resource names ("gpu_cc_cx_gdsc" and friends) to the address a TCS vote has to
++ * name. A vote written to the wrong address is a whole-device risk, so the addresses come
++ * from the table, never from a guess. This runs on the safe path - step 10 - because the
++ * deeper steps have been unreliable to start.
++ */
++static void
++polaris_gx_m1n_cmddb_dump(vm_offset_t cdb)
++{
++	unsigned int off;
++
++	printf("POLARIS GPU: m1n: command DB dump from 0x0C3F0000\n");
++	sweet_log_sync();
++	delay(200000);
++
++	for (off = 0; off < 0x600; off += 16) {
++		char ascii[17];
++		unsigned int i;
++
++		for (i = 0; i < 16; i++) {
++			uint8_t c = *(volatile uint8_t *)(uintptr_t)(cdb + off + i);
++
++			ascii[i] = (c >= 32 && c < 127) ? (char)c : '.';
++		}
++		ascii[16] = 0;
++		printf("POLARIS GPU: m1n: %03x %08x %08x %08x %08x |%s|\n", off,
++		    polaris_reg_rd_b(cdb, off), polaris_reg_rd_b(cdb, off + 4u),
++		    polaris_reg_rd_b(cdb, off + 8u), polaris_reg_rd_b(cdb, off + 12u), ascii);
++	}
++	printf("POLARIS GPU: m1n: dump done\n");
++	sweet_log_sync();
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -2268,6 +2304,16 @@
+ 	    (polaris_reg_rd(gpucc, 0x1540u) & 0x80000000u) ? "power on" : "not on",
+ 	    polaris_reg_rd(gpucc, 0x1508u));
+ 
++	if (step == 10) {
++		vm_offset_t cdb = ml_io_map((vm_offset_t)0x0C3F0000ULL, (vm_size_t)0x1000);
++
++		if (cdb != 0) {
++			polaris_gx_m1n_cmddb_dump(cdb);
++		} else {
++			printf("POLARIS GPU: m1n: cmd db map failed\n");
++		}
++	}
++
+ 	if (step >= 18) {
+ 		/* Prepare everything now, but let the CM3 out of reset only after boot. */
+ 		/* zap_hfi stays false here: the old in-zap path maps memory that is not
