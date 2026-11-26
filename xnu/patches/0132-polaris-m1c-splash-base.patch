@@ -1,0 +1,60 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1432,6 +1432,7 @@
+ 	vm_offset_t page;
+ 	uint64_t pa;
+ 	struct polaris_hfi_blob *blob;
++	static uint8_t saved[POLARIS_HFI_PAGE];
+ 	uint32_t before_info, before_tbl, before_sfr;
+ 	uint32_t off_to_gmu, off_to_host;
+ 
+@@ -1460,7 +1461,14 @@
+ 			    (unsigned long long)size);
+ 			return false;
+ 		}
+-		pa = (base + size - POLARIS_HFI_PAGE) & ~((uint64_t)POLARIS_HFI_PAGE - 1);
++		/*
++		 * The tail page faulted, and that is the lesson: a declared size is a
++		 * reservation, not a promise that the last page is backed. The first page is
++		 * backed - it is what the screen is showing - and since XNU's DRAM starts at
++		 * 4 GiB this region is outside its map, so ml_io_map creates the only mapping
++		 * and there is no attribute aliasing to worry about.
++		 */
++		pa = base & ~((uint64_t)POLARIS_HFI_PAGE - 1);
+ 		printf("POLARIS GPU: m1c zap: using %s 0x%llx +0x%llx, table at 0x%llx\n",
+ 		    what, (unsigned long long)base, (unsigned long long)size,
+ 		    (unsigned long long)pa);
+@@ -1470,13 +1478,6 @@
+ 		    (unsigned long long)pa);
+ 		return false;
+ 	}
+-	/* Bisect: say where the table would go, map nothing. The guard keeps the rest
+-	 * of the function reachable for the compiler while never running at all. */
+-	printf("POLARIS GPU: m1c zap: would map 0x%llx, not mapping yet\n",
+-	    (unsigned long long)pa);
+-	if (pa != 0) {
+-		return false;
+-	}
+ 	page = ml_io_map((vm_offset_t)pa, (vm_size_t)POLARIS_HFI_PAGE);
+ 	if (page == 0) {
+ 		printf("POLARIS GPU: m1c zap: ml_io_map failed for 0x%llx\n",
+@@ -1484,6 +1485,7 @@
+ 		return false;
+ 	}
+ 	blob = (struct polaris_hfi_blob *)(uintptr_t)page;
++	memcpy(saved, blob, POLARIS_HFI_PAGE);	/* what was on screen, to put back */
+ 	bzero(blob, POLARIS_HFI_PAGE);
+ 
+ 	blob->table.version = 0;
+@@ -1531,7 +1533,10 @@
+ 	    polaris_reg_rd(gmuwin, POLARIS_HFI_SFR_ADDR * 4u),
+ 	    (polaris_reg_rd(gmuwin, POLARIS_HFI_QTBL_ADDR * 4u) == (uint32_t)pa) ? "matches" : "MISMATCH");
+ 
+-	/* keep them this time: the next step is the one that needs them set */
++	/* put the screen back: the corner flickers for a few milliseconds, nothing more */
++	memcpy(blob, saved, POLARIS_HFI_PAGE);
++
++	/* keep the registers: the next step is the one that needs them set */
+ 	(void)before_info;
+ 	(void)before_tbl;
+ 	(void)before_sfr;
