@@ -335,3 +335,42 @@ m1c zap: would map 0x9f7ff000, not mapping yet
 3. **把快照写回去**，屏幕上只闪一下左上角 4 KiB。
 
 这条路径不碰未映射页，也不会留下显示残影。
+
+## 18. 0133/0134：表放对了，放开复位仍然挂（2026-11-26 21:29）
+
+**0133 成功**——shim 在关 MMU 状态下把表写到 `0x9DCE6000`（可见帧缓冲最后一页），
+内核只写寄存器、零映射：
+
+```
+m1c hfi: table 0x9dce6000 seeded by the shim, not mapped here
+m1c hfi: regs after info 0x00000001 tbl 0x9dce6000 sfr 0x9dce6078 (tbl matches)
+```
+
+这是本移植第一次把队列表放到 GMU 能寻址的地址上，且代价为零。
+
+**0134 仍然挂**（`polarisgxm1=12`，先备表再放复位）：
+
+```
+m1b boot before: sysreset 0x00000001 bootcfg 0x00000000
+m1b boot write bootcfg 0x00000002
+m1b boot release reset (sysreset 0x00000000)
+        ← 之后无输出，ring 里 launchd 行为 0，确认整机挂死
+```
+
+判断依据：这次 ring 只有 8306 字节、`launchd` 零行；正常启动会有大量 launchd 输出。
+用户按键进 fastboot 是**硬复位**救回来的，不是自然启动。
+
+## 19. 下一步：把"挂"当作判据，逐项隔离
+
+既然挂得可复现，就可以当 oracle 用。三个单变量实验，每个只要一次上机：
+
+| 步骤 | 只做什么 | 若存活说明 |
+|---|---|---|
+| `=13` | 只写 `BOOT_CONFIG = 2`，**不碰复位** | 写 bootcfg 本身安全，问题在复位后取指 |
+| `=14` | 写 `BOOT_CONFIG = 0`，再放开复位 | 0x2 这个值可能是错的 |
+| `=15` | 只清 `SYSRESET`，不写 bootcfg | 顺序/依赖关系 |
+
+还有一个必须先排除的未知：**shim 写进帧缓冲的那 4 KiB，内容是否真的是我们以为的那样**。
+内核读不到低地址，但可以反过来做——让 shim 把同一份表**复制一份到内存映射的 blob 区**，
+内核读出来打印，逐字比对。`015` 应该先加这个校验，否则后面每个结论都建立在
+"表内容正确"这个未验证的假设上。
