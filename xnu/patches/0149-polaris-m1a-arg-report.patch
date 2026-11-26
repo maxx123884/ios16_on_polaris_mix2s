@@ -1,0 +1,13 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1923,6 +1923,10 @@
+ 				int m1a = 0;
+ 
+ 				PE_parse_boot_argn("polarisgxm1", &m1a, sizeof(m1a));
++				/* If the branch below never runs, this line says whether the argument
++				 * arrived at all - which is the difference between a parse problem and a
++				 * crash, and every silent run so far could have been either. */
++				printf("POLARIS GPU: m1a argument parsed as %d\n", m1a);
+ 				if (m1a >= 1) {
+ 					polaris_gx_m1a(m1a);
+ 				}

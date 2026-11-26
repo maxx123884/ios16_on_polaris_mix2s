@@ -1,0 +1,16 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1858,8 +1858,12 @@
+ 
+ 	if (step >= 18) {
+ 		/* Prepare everything now, but let the CM3 out of reset only after boot. */
++		/* zap_hfi stays false here: the old in-zap path maps memory that is not
++		 * backed and writes offsets that are wrong, and it runs before this branch
++		 * gets anywhere near the vendor sequence. That single argument is why
++		 * steps 20 to 25 produced no output at all. */
+ 		polaris_gx_m1a_clocks(gcc, gpucc, false, step >= 6, false, step >= 8,
+-		    false, step >= 10, step >= 11, false, false);
++		    false, step >= 10, false, false, false);
+ 		if (step >= 20) {
+ 			/*
+ 			 * Inline, here and now. The thread route stalled the boot around ten seconds

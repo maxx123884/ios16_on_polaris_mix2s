@@ -1,0 +1,20 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1592,6 +1592,8 @@
+ 	bool ran;
+ 
+ 	printf("POLARIS GPU: m1e: entering, vendor offsets\n");
++	sweet_log_sync();
++	delay(300000);
+ 	printf("POLARIS GPU: m1e before: sysreset 0x%08x bootcfg 0x%08x init 0x%08x\n",
+ 	    polaris_reg_rd(win, POLARIS_V_SYSRESET),
+ 	    polaris_reg_rd(win, POLARIS_V_BOOT_CONFIG),
+@@ -1616,6 +1618,8 @@
+ 	    polaris_reg_rd(win, POLARIS_V_QTBL_INFO),
+ 	    polaris_reg_rd(win, POLARIS_V_HFI_SFR_ADDR),
+ 	    polaris_reg_rd(win, POLARIS_V_FENCE_RANGE_0));
++	sweet_log_sync();
++	delay(300000);
+ 
+ 	/* reset, make sure it lands, then release */
+ 	polaris_reg_wr(win, POLARIS_V_SYSRESET, 1u);

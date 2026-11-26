@@ -1,0 +1,112 @@
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -1553,6 +1553,23 @@
+ }
+ 
+ 
++
++/* The vendor headers give byte offsets; polaris_reg_rd/wr multiply by four because the
++ * constants this port grew up with were dword indices. Mixing the two walks off the end
++ * of the mapped window - 0x1F800 became 0x7E000 - and that is a bus error, not a wrong
++ * value, which is why the machine died without printing anything. */
++static uint32_t
++polaris_reg_rd_b(vm_offset_t win, uint32_t byte_off)
++{
++	return *(volatile uint32_t *)(uintptr_t)(win + byte_off);
++}
++
++static void
++polaris_reg_wr_b(vm_offset_t win, uint32_t byte_off, uint32_t val)
++{
++	*(volatile uint32_t *)(uintptr_t)(win + byte_off) = val;
++}
++
+ /*
+  * M1e: the vendor's own boot sequence, with the vendor's own register offsets.
+  *
+@@ -1595,34 +1612,34 @@
+ 	sweet_log_sync();
+ 	delay(300000);
+ 	printf("POLARIS GPU: m1e before: sysreset 0x%08x bootcfg 0x%08x init 0x%08x\n",
+-	    polaris_reg_rd(win, POLARIS_V_SYSRESET),
+-	    polaris_reg_rd(win, POLARIS_V_BOOT_CONFIG),
+-	    polaris_reg_rd(win, POLARIS_V_FW_INIT_RESULT));
+-
+-	polaris_reg_wr(win, POLARIS_V_GENERAL_7, 1u);		/* TCM retention */
+-	polaris_reg_wr(win, POLARIS_V_FW_INIT_RESULT, 0u);	/* so the value is fresh */
+-	polaris_reg_wr(win, POLARIS_V_BOOT_CONFIG, POLARIS_V_TCM_BOOT);
+-
+-	polaris_reg_wr(win, POLARIS_V_QTBL_ADDR, POLARIS_HFI_PA);
+-	polaris_reg_wr(win, POLARIS_V_QTBL_INFO, 1u);
+-	polaris_reg_wr(win, POLARIS_V_FENCE_RANGE_0, POLARIS_V_FENCE_MASK);
++	    polaris_reg_rd_b(win, POLARIS_V_SYSRESET),
++	    polaris_reg_rd_b(win, POLARIS_V_BOOT_CONFIG),
++	    polaris_reg_rd_b(win, POLARIS_V_FW_INIT_RESULT));
++
++	polaris_reg_wr_b(win, POLARIS_V_GENERAL_7, 1u);		/* TCM retention */
++	polaris_reg_wr_b(win, POLARIS_V_FW_INIT_RESULT, 0u);	/* so the value is fresh */
++	polaris_reg_wr_b(win, POLARIS_V_BOOT_CONFIG, POLARIS_V_TCM_BOOT);
++
++	polaris_reg_wr_b(win, POLARIS_V_QTBL_ADDR, POLARIS_HFI_PA);
++	polaris_reg_wr_b(win, POLARIS_V_QTBL_INFO, 1u);
++	polaris_reg_wr_b(win, POLARIS_V_FENCE_RANGE_0, POLARIS_V_FENCE_MASK);
+ 	/* not an address: the firmware reads the chip id from here */
+-	polaris_reg_wr(win, POLARIS_V_HFI_SFR_ADDR, POLARIS_V_CHIPID_A630);
++	polaris_reg_wr_b(win, POLARIS_V_HFI_SFR_ADDR, POLARIS_V_CHIPID_A630);
+ 
+ 	/* idle configuration the vendor applies right before the start */
+-	polaris_reg_wr(win, POLARIS_V_SYS_BUS_CONFIG, 1u);
+-	polaris_reg_wr(win, POLARIS_V_PWR_COL_IFPC, 0x9C40400u);
++	polaris_reg_wr_b(win, POLARIS_V_SYS_BUS_CONFIG, 1u);
++	polaris_reg_wr_b(win, POLARIS_V_PWR_COL_IFPC, 0x9C40400u);
+ 
+ 	printf("POLARIS GPU: m1e programmed: tbl 0x%08x info 0x%08x sfr 0x%08x fence 0x%08x\n",
+-	    polaris_reg_rd(win, POLARIS_V_QTBL_ADDR),
+-	    polaris_reg_rd(win, POLARIS_V_QTBL_INFO),
+-	    polaris_reg_rd(win, POLARIS_V_HFI_SFR_ADDR),
+-	    polaris_reg_rd(win, POLARIS_V_FENCE_RANGE_0));
++	    polaris_reg_rd_b(win, POLARIS_V_QTBL_ADDR),
++	    polaris_reg_rd_b(win, POLARIS_V_QTBL_INFO),
++	    polaris_reg_rd_b(win, POLARIS_V_HFI_SFR_ADDR),
++	    polaris_reg_rd_b(win, POLARIS_V_FENCE_RANGE_0));
+ 	sweet_log_sync();
+ 	delay(300000);
+ 
+ 	/* reset, make sure it lands, then release */
+-	polaris_reg_wr(win, POLARIS_V_SYSRESET, 1u);
++	polaris_reg_wr_b(win, POLARIS_V_SYSRESET, 1u);
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+@@ -1630,14 +1647,14 @@
+ 	/* Everything above this line has to survive, whatever happens next. */
+ 	sweet_log_sync();
+ 	delay(300000);
+-	polaris_reg_wr(win, POLARIS_V_SYSRESET, 0u);
++	polaris_reg_wr_b(win, POLARIS_V_SYSRESET, 0u);
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+ 
+ 	ran = false;
+ 	for (i = 0; i < 2000; i++) {			/* 10 ms, the vendor's timeout */
+-		v = polaris_reg_rd(win, POLARIS_V_FW_INIT_RESULT);
++		v = polaris_reg_rd_b(win, POLARIS_V_FW_INIT_RESULT);
+ 		if (v == POLARIS_V_BOOT_MAGIC) {
+ 			ran = true;
+ 			break;
+@@ -1648,11 +1665,11 @@
+ 	    ran ? "0xBABEFACE - the firmware booted" : "not the magic value");
+ 
+ 	if (ran) {
+-		polaris_reg_wr(win, POLARIS_V_HFI_CTRL_INIT, 1u);
++		polaris_reg_wr_b(win, POLARIS_V_HFI_CTRL_INIT, 1u);
+ 		delay(200);
+ 		printf("POLARIS GPU: m1e: hfi_status 0x%08x (bit0 %s)\n",
+-		    polaris_reg_rd(win, POLARIS_V_HFI_CTRL_STATUS),
+-		    (polaris_reg_rd(win, POLARIS_V_HFI_CTRL_STATUS) & 1u) ? "set" : "clear");
++		    polaris_reg_rd_b(win, POLARIS_V_HFI_CTRL_STATUS),
++		    (polaris_reg_rd_b(win, POLARIS_V_HFI_CTRL_STATUS) & 1u) ? "set" : "clear");
+ 	}
+ }
+ 

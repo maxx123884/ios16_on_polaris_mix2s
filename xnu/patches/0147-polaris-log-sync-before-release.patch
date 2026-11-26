@@ -1,0 +1,43 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -813,6 +813,20 @@
+ 	}
+ }
+ 
++/*
++ * Force the console ring out to disk now instead of at the next tick.
++ *
++ * The flusher is a thread that wakes on a timer, so a machine that dies right after a
++ * dangerous write loses exactly the lines explaining why - which is most of the evidence
++ * this project needs. Waking it explicitly and giving it a moment to finish narrows that
++ * hole to almost nothing.
++ */
++void
++sweet_log_sync(void)
++{
++	wakeup(&sweet_log_chan);
++}
++
+ /* Root device for rd=ufsroot0 (IOFindBSDRoot). */
+ int sweet_ufs_rootdev(dev_t *dev);
+ 
+--- a/bsd/dev/polaris_gpu.c
++++ b/bsd/dev/polaris_gpu.c
+@@ -258,6 +258,7 @@
+ extern void bzero(void *b, size_t len);
+ extern void timeout(void (*fn)(void *), void *arg, int ticks);
+ extern int hz;
++extern void sweet_log_sync(void);
+ extern kern_return_t kernel_thread_start(void (*fn)(void *, wait_result_t), void *arg, thread_t *out);
+ extern int tsleep(void *chan, int pri, const char *wmesg, int timo);
+ extern void kfree(void *addr, vm_size_t size);
+@@ -1622,6 +1623,9 @@
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ #endif
+ 	printf("POLARIS GPU: m1e: reset asserted, releasing now\n");
++	/* Everything above this line has to survive, whatever happens next. */
++	sweet_log_sync();
++	delay(300000);
+ 	polaris_reg_wr(win, POLARIS_V_SYSRESET, 0u);
+ #if defined(__aarch64__)
+ 	__asm__ volatile ("dsb sy" ::: "memory");
